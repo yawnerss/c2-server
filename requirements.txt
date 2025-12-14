@@ -1,7 +1,6 @@
-websockets==12.0
-aiohttp==3.9.0
-aiohttp[speedups]==3.9.0
-cryptography==41.0.7
+Flask==3.0.0
+flask-socketio==5.3.6
+eventlet==0.37.1
 python-dotenv==1.0.0
-ujson==5.8.0
-
+requests==2.31.0
+colorama==0.4.6
