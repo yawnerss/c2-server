@@ -1,6 +1,6 @@
 Flask==3.0.0
 flask-socketio==5.3.6
-gevent==24.8.0
+gevent==24.10.3  # Fixed version number
 gevent-websocket==0.10.1
 requests==2.31.0
 colorama==0.4.6
