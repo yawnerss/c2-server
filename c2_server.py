@@ -722,10 +722,11 @@ def handle_attack_status(data):
     if status == 'started':
         print(f"[💥] Attack STARTED: {attack_id[:8]} on {target} by {client_id[:8]}")
     elif status == 'running':
-        if packets_sent % 1000 == 0:  # Log every 1000 packets
+        if packets_sent % 100 == 0:  # Log every 100 packets
             print(f"[💥] Attack {attack_id[:8]}: {client_id[:8]} sent {packets_sent:,} packets to {target}")
     elif status in ['completed', 'stopped']:
-        print(f"[💥] Attack {status.upper()}: {attack_id[:8]} total {attack_stats[attack_id]['total_packets']:,} packets")
+        total = attack_stats[attack_id]['total_packets']
+        print(f"[💥] Attack {status.upper()}: {attack_id[:8]} total {total:,} packets")
 
 @socketio.on('client_pong')
 def handle_client_pong(data):
