@@ -1,4 +1,4 @@
-app = "c2-server"
+app = "c2-server.py"
 primary_region = "iad"
 
 [env]
@@ -20,3 +20,4 @@ primary_region = "iad"
     interval = 10000
     timeout = 2000
     grace_period = "5s"
+
