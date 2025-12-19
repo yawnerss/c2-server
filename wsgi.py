@@ -1,5 +1,11 @@
-# wsgi.py
-from server import socketio, app
-
-if __name__ == "__main__":
-    socketio.run(app, host='0.0.0.0', port=8080, debug=False)
+services:
+  - type: web
+    name: c2-web-control
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python server.py
+    envVars:
+      - key: PORT
+        value: 10000
+      - key: PYTHON_VERSION
+        value: 3.9.0
