@@ -36,7 +36,9 @@ try:
                        cors_allowed_origins="*", 
                        async_mode='eventlet',
                        ping_timeout=60,
-                       ping_interval=25)
+                       ping_interval=25,
+                       logger=True,
+                       engineio_logger=True)
     print("[*] Using eventlet for WebSocket support")
 except ImportError:
     socketio = SocketIO(app, 
@@ -792,6 +794,10 @@ threading.Thread(target=cleanup_thread, daemon=True).start()
 
 # ============= FLY.IO COMPATIBLE MAIN =============
 
+def create_app():
+    """Factory function for Gunicorn"""
+    return socketio
+
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 8080))
     
@@ -802,10 +808,8 @@ if __name__ == '__main__':
     print()
     
     # For Fly.io deployment with WebSocket support
-    # IMPORTANT: Run with: python server.py
     socketio.run(app, 
                 host='0.0.0.0', 
                 port=port, 
                 debug=False, 
-                allow_unsafe_werkzeug=True,
-                log_output=True)
+                allow_unsafe_werkzeug=True)
