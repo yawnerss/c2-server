@@ -373,9 +373,7 @@ class Layer7Client:
             reconnection_delay=1,
             reconnection_delay_max=5,
             logger=False,
-            engineio_logger=False,
-            ping_interval=25,
-            ping_timeout=60,
+            engineio_logger=False
         )
         
         self.current_attack = None
