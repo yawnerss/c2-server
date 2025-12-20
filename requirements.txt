@@ -1,5 +1,21 @@
+# Core Flask & Web Framework
 Flask==2.3.3
+Flask-SocketIO==5.3.6
 Flask-CORS==4.0.0
+Werkzeug==2.3.7
+Jinja2==3.1.6
+click==8.3.1
+
+# WebSocket & Async
+python-socketio==5.9.0
+eventlet==0.33.3
+
+# HTTP & Networking
 requests==2.31.0
+
+# System Monitoring
 psutil==5.9.5
+
+# Security & Hashing (Optional)
 python-dotenv==1.0.0
+cryptography==42.0.5
