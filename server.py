@@ -622,5 +622,6 @@ if __name__ == '__main__':
     print(f"[💻] Run c2_client.py on ALL computers")
     print(f"[⚡] Attacks will run on ALL clients simultaneously\n")
     
-    socketio.run(app, host='0.0.0.0', port=PORT, debug=False)
+    socketio.run(app, host='0.0.0.0', port=PORT, debug=False, allow_unsafe_werkzeug=True)
+
 
