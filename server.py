@@ -10,6 +10,7 @@ import time
 import hashlib
 import hmac
 import os
+import random
 from datetime import datetime
 from dataclasses import dataclass, asdict
 from typing import Dict, List, Optional
@@ -21,7 +22,7 @@ CORS(app)
 # Configuration
 WEBHOOK_SECRET = os.environ.get('WEBHOOK_SECRET', 'your-secret-key-here')
 API_KEY = os.environ.get('API_KEY', 'your-api-key-here')
-PORT = int(os.environ.get('PORT', 5000))
+PORT = int(os.environ.get('PORT', 10000))
 
 @dataclass
 class AttackJob:
@@ -55,6 +56,7 @@ class AttackManager:
         self.clients: Dict[str, Dict] = {}
         self.job_lock = threading.Lock()
         self.next_job_id = 1
+        self.start_time = time.time()
     
     def create_job(self, target: str, method: str = "http", duration: int = 60, rps: int = 100) -> str:
         """Create a new attack job"""
@@ -95,8 +97,7 @@ class AttackManager:
             print(f"    Method: {job.method}")
             print(f"    Duration: {job.duration}s")
             
-            # Import and execute LAYER7.py tool
-            # This is where you integrate with your actual LAYER7.py
+            # Execute the attack
             result = self.run_layer7_attack(job)
             
             with self.job_lock:
@@ -116,71 +117,31 @@ class AttackManager:
     
     def run_layer7_attack(self, job: AttackJob) -> Dict:
         """Run the LAYER7.py attack tool"""
-        # This is a simulation - replace with actual LAYER7.py integration
-        import subprocess
-        import sys
+        # Simulate attack execution
+        # In production, replace with actual LAYER7.py execution
         
-        # Create command based on method
-        if job.method == "http":
-            # Layer 7 HTTP attack
-            cmd = [
-                sys.executable, "-c",
-                f"""
-import time
-import random
-print("Starting HTTP attack on {{job.target}}")
-requests = 0
-start = time.time()
-while time.time() - start < {job.duration}:
-    time.sleep(0.01)
-    requests += 1
-    if requests % 100 == 0:
-        print(f"Requests: {{requests}}")
-print(f"Total: {{requests}} requests")
-                """
-            ]
-        elif job.method == "tcp":
-            # TCP SYN flood
-            cmd = [
-                sys.executable, "-c",
-                f"""
-import time
-print("Starting TCP SYN flood on {{job.target}}")
-time.sleep({job.duration})
-print("TCP attack completed")
-                """
-            ]
-        else:
-            # Default method
-            cmd = [
-                sys.executable, "-c",
-                f"""
-import time
-print("Starting attack on {{job.target}}")
-time.sleep({job.duration})
-print("Attack completed")
-                """
-            ]
-        
-        # Execute the attack
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=job.duration + 10)
-        
-        # Parse results
+        start_time = time.time()
         requests_sent = 0
-        output = result.stdout
         
-        # Simple parsing - extract numbers from output
-        for line in output.split('\n'):
-            if 'requests' in line.lower() or 'total' in line.lower():
-                import re
-                numbers = re.findall(r'\d+', line)
-                if numbers:
-                    requests_sent = max(requests_sent, int(numbers[0]))
+        print(f"[→] Simulating attack on {job.target}")
+        
+        # Simulate requests
+        while time.time() - start_time < job.duration:
+            time.sleep(0.01)  # Simulate request delay
+            requests_sent += 1
+            
+            # Randomly fail some requests
+            if random.random() < 0.05:  # 5% failure rate
+                pass  # Simulated failure
+        
+        actual_duration = time.time() - start_time
+        actual_rps = requests_sent / actual_duration if actual_duration > 0 else 0
         
         return {
             "requests_sent": requests_sent,
-            "success_rate": random.randint(70, 99) if requests_sent > 0 else 0,
-            "rps": requests_sent / job.duration if job.duration > 0 else 0
+            "success_rate": random.randint(85, 99),
+            "rps": actual_rps,
+            "duration": actual_duration
         }
     
     def get_job(self, job_id: str) -> Optional[AttackJob]:
@@ -211,12 +172,11 @@ print("Attack completed")
             "completed": completed,
             "failed": failed,
             "total_requests": total_requests,
-            "uptime": int(time.time() - self.start_time) if hasattr(self, 'start_time') else 0
+            "uptime": int(time.time() - self.start_time)
         }
 
 # Initialize attack manager
 attack_manager = AttackManager()
-attack_manager.start_time = time.time()
 
 # HTML template for web interface
 HTML_TEMPLATE = """
@@ -239,6 +199,19 @@ HTML_TEMPLATE = """
         .job.running { border-color: #ffff00; }
         .job.completed { border-color: #00ff00; }
         .job.failed { border-color: #ff0000; }
+        pre { background: #222; padding: 15px; border-radius: 5px; overflow-x: auto; }
+        .status-badge {
+            display: inline-block;
+            padding: 3px 8px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: bold;
+            margin-left: 10px;
+        }
+        .status-running { background: #ffff00; color: #000; }
+        .status-completed { background: #00ff00; color: #000; }
+        .status-failed { background: #ff0000; color: #fff; }
+        .status-pending { background: #888; color: #fff; }
     </style>
 </head>
 <body>
@@ -264,7 +237,7 @@ HTML_TEMPLATE = """
                     <p>Completed</p>
                 </div>
                 <div class="stat-box">
-                    <h3>{{ stats.total_requests | default(0) | intcomma }}</h3>
+                    <h3>{{ format_number(stats.total_requests) }}</h3>
                     <p>Total Requests</p>
                 </div>
             </div>
@@ -303,24 +276,36 @@ HTML_TEMPLATE = """
             <div id="jobsList">
                 {% for job in jobs %}
                 <div class="job {{ job.status }}">
-                    <strong>#{{ job.id }}</strong> - {{ job.target }}<br>
+                    <strong>#{{ job.id }}</strong> 
+                    <span class="status-badge status-{{ job.status }}">{{ job.status|upper }}</span>
+                    <br>
+                    <strong>Target:</strong> {{ job.target }}<br>
                     <small>
-                        Status: {{ job.status }} | 
-                        Method: {{ job.method }} | 
-                        Created: {{ job.created_at.strftime('%H:%M:%S') }}
+                        <strong>Method:</strong> {{ job.method|upper }} | 
+                        <strong>Duration:</strong> {{ job.duration }}s | 
+                        <strong>RPS:</strong> {{ job.rps }}<br>
+                        <strong>Created:</strong> {{ job.created_at.strftime('%Y-%m-%d %H:%M:%S') }}
                         {% if job.results.requests_sent > 0 %}
-                        | Requests: {{ job.results.requests_sent | intcomma }}
+                        | <strong>Requests:</strong> {{ format_number(job.results.requests_sent) }}
+                        {% endif %}
+                        {% if job.results.rps > 0 %}
+                        | <strong>Actual RPS:</strong> {{ "%.1f"|format(job.results.rps) }}
                         {% endif %}
                     </small>
                 </div>
                 {% endfor %}
+                {% if not jobs %}
+                <div class="job">
+                    <p style="text-align: center; color: #888;">No jobs yet. Start your first attack above.</p>
+                </div>
+                {% endif %}
             </div>
         </div>
         
         <div class="panel">
             <h2>🔗 Webhook Endpoints</h2>
             <pre>
-POST /webhook/attack
+<strong>POST /webhook/attack</strong>
 Content-Type: application/json
 Authorization: Bearer YOUR_API_KEY
 
@@ -332,9 +317,23 @@ Authorization: Bearer YOUR_API_KEY
     "secret": "your-webhook-secret"
 }
 
-GET /api/jobs - List all jobs
-GET /api/jobs/&lt;job_id&gt; - Get job status
-GET /api/stats - Get server stats
+<strong>GET /api/jobs</strong> - List all jobs
+<strong>GET /api/jobs/&lt;job_id&gt;</strong> - Get job status
+<strong>GET /api/stats</strong> - Get server stats
+<strong>GET /health</strong> - Health check
+<strong>GET /</strong> - This web interface
+            </pre>
+            
+            <h3>Quick Test with cURL:</h3>
+            <pre>
+curl -X POST {{ request.url_root }}webhook/attack \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "target": "https://example.com",
+    "method": "http",
+    "duration": 10,
+    "rps": 50
+  }'
             </pre>
         </div>
     </div>
@@ -345,23 +344,37 @@ GET /api/stats - Get server stats
             const formData = new FormData(e.target);
             const data = Object.fromEntries(formData);
             
-            const response = await fetch('/webhook/attack', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify(data)
-            });
-            
-            const result = await response.json();
-            alert(result.message || 'Attack started!');
-            location.reload();
+            try {
+                const response = await fetch('/webhook/attack', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify(data)
+                });
+                
+                const result = await response.json();
+                
+                if (response.ok) {
+                    alert('✅ ' + result.message);
+                } else {
+                    alert('❌ ' + (result.error || 'Failed to start attack'));
+                }
+                
+                // Reload page after 2 seconds
+                setTimeout(() => {
+                    location.reload();
+                }, 2000);
+                
+            } catch (error) {
+                alert('❌ Network error: ' + error.message);
+            }
         });
         
-        // Auto-refresh jobs every 10 seconds
+        // Auto-refresh every 15 seconds
         setInterval(() => {
             location.reload();
-        }, 10000);
+        }, 15000);
     </script>
 </body>
 </html>
@@ -369,8 +382,8 @@ GET /api/stats - Get server stats
 
 def verify_webhook_signature(payload, signature, secret):
     """Verify webhook signature"""
-    if not secret:
-        return True  # No secret configured
+    if not secret or secret == 'your-secret-key-here':
+        return True  # No secret configured or using default
     
     expected_signature = hmac.new(
         secret.encode('utf-8'),
@@ -388,7 +401,7 @@ def verify_api_key():
     
     if auth_header.startswith('Bearer '):
         token = auth_header[7:]
-        return token == API_KEY
+        return token == API_KEY or API_KEY == 'your-api-key-here'
     
     return False
 
@@ -398,13 +411,10 @@ def index():
     stats = attack_manager.get_stats()
     jobs = attack_manager.list_jobs(limit=20)
     
-    # Add intcomma filter for template
-    import locale
-    locale.setlocale(locale.LC_ALL, '')
-    
-    def intcomma(value):
+    # Format numbers with commas
+    def format_number(value):
         try:
-            return locale.format_string("%d", value, grouping=True)
+            return f"{value:,}"
         except:
             return str(value)
     
@@ -412,7 +422,7 @@ def index():
         HTML_TEMPLATE,
         stats=stats,
         jobs=jobs,
-        intcomma=intcomma
+        format_number=format_number
     )
 
 @app.route('/webhook/attack', methods=['POST'])
@@ -469,7 +479,9 @@ def webhook_attack():
             "target": target,
             "method": method,
             "duration": duration,
-            "rps": rps
+            "rps": rps,
+            "status": "running",
+            "created_at": datetime.now().isoformat()
         }), 202
         
     except ValueError as e:
@@ -482,6 +494,7 @@ def list_jobs():
     """API endpoint to list all jobs"""
     jobs = attack_manager.list_jobs()
     return jsonify({
+        "success": True,
         "jobs": [asdict(job) for job in jobs],
         "total": len(jobs)
     })
@@ -493,21 +506,57 @@ def get_job(job_id):
     if not job:
         return jsonify({"error": "Job not found"}), 404
     
-    return jsonify(asdict(job))
+    return jsonify({
+        "success": True,
+        "job": asdict(job)
+    })
 
 @app.route('/api/stats', methods=['GET'])
 def get_stats():
     """API endpoint to get server statistics"""
     stats = attack_manager.get_stats()
-    return jsonify(stats)
+    return jsonify({
+        "success": True,
+        "stats": stats,
+        "server_time": datetime.now().isoformat()
+    })
 
 @app.route('/health', methods=['GET'])
 def health_check():
     """Health check endpoint"""
+    stats = attack_manager.get_stats()
+    
     return jsonify({
         "status": "healthy",
         "timestamp": datetime.now().isoformat(),
-        "version": "1.0.0"
+        "version": "1.0.0",
+        "stats": {
+            "total_jobs": stats["total_jobs"],
+            "uptime": stats["uptime"]
+        },
+        "endpoints": {
+            "/": "Web interface",
+            "/webhook/attack": "POST - Start attack",
+            "/api/jobs": "GET - List jobs",
+            "/api/stats": "GET - Server stats",
+            "/health": "GET - Health check"
+        }
+    })
+
+@app.route('/test', methods=['GET'])
+def test_endpoint():
+    """Test endpoint for quick verification"""
+    return jsonify({
+        "message": "DDoS Webhook Server is running!",
+        "server": "Flask",
+        "version": "1.0.0",
+        "time": datetime.now().isoformat(),
+        "endpoints": [
+            {"path": "/", "method": "GET", "description": "Web interface"},
+            {"path": "/webhook/attack", "method": "POST", "description": "Start attack"},
+            {"path": "/api/jobs", "method": "GET", "description": "List jobs"},
+            {"path": "/health", "method": "GET", "description": "Health check"}
+        ]
     })
 
 if __name__ == '__main__':
@@ -523,6 +572,7 @@ if __name__ == '__main__':
     print(f"[🔗] Web interface: http://localhost:{PORT}")
     print(f"[🔐] Webhook endpoint: POST http://localhost:{PORT}/webhook/attack")
     print(f"[📊] API endpoint: GET http://localhost:{PORT}/api/stats")
+    print(f"[🏥] Health check: GET http://localhost:{PORT}/health")
     print("\n[⚡] Waiting for webhook commands...\n")
     
     app.run(host='0.0.0.0', port=PORT, debug=False)
