@@ -19,3 +19,6 @@ psutil==5.9.5
 # Security & Hashing (Optional)
 python-dotenv==1.0.0
 cryptography==42.0.5
+python-socketio[client]
+psutil
+
